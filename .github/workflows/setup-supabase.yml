@@ -1,15 +1,10 @@
 # Configura el proyecto de Supabase de GolfBuddy usando la API de administración.
-# Se ejecuta manualmente (workflow_dispatch); el token se pasa como input y se
-# enmascara en los logs — nunca se guarda en el repositorio.
+# Se ejecuta manualmente (workflow_dispatch). El token se lee del secreto
+# SUPABASE_TOKEN del repositorio — nunca se guarda en el código ni en los logs.
 name: Configurar Supabase
 
 on:
   workflow_dispatch:
-    inputs:
-      sb_token:
-        description: "Supabase personal access token"
-        required: true
-        type: string
 
 permissions: {}
 
@@ -19,10 +14,10 @@ jobs:
     steps:
       - name: Configurar proyecto Supabase
         env:
-          SB_TOKEN: ${{ inputs.sb_token }}
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
           set -euo pipefail
-          echo "::add-mask::$SB_TOKEN"
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN en el repositorio"; exit 1; }
           api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
 
           echo "== Buscando proyectos existentes =="
