@@ -1,4 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
+
+/* Cliente Supabase. Si config.js no tiene credenciales, la app corre en
+   MODO LOCAL (datos en el navegador). Con credenciales, corre en MODO NUBE:
+   cuentas seguras con Supabase Auth y datos compartidos entre todos. */
+const sb = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const CLOUD = !!sb;
 
 /* ============================================================
    GolfBuddy — Modo de juego "MACHETERO"
@@ -477,12 +485,58 @@ const buildKFBExampleEvent = () => {
     ],
   };
 };
-// Persistencia local del navegador (localStorage). Los datos viven en el
-// dispositivo del usuario; al migrar a Supabase solo hay que cambiar este objeto.
-const store = {
+// Persistencia local del navegador (localStorage).
+const localStore = {
   async get(k, def) { try { const r = localStorage.getItem(k); return r != null ? JSON.parse(r) : def; } catch { return def; } },
   async set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
+
+// Persistencia en Supabase: tabla "collections" (key → value jsonb).
+// Las escrituras se agrupan (debounce) para no mandar una petición por tecla.
+const cloudTimers = {};
+const cloudStore = {
+  async get(k, def) {
+    try {
+      const { data, error } = await sb.from("collections").select("value").eq("key", k).maybeSingle();
+      if (error) throw error;
+      return data ? data.value : def;
+    } catch { return def; }
+  },
+  async set(k, v) {
+    clearTimeout(cloudTimers[k]);
+    cloudTimers[k] = setTimeout(async () => {
+      try { await sb.from("collections").upsert({ key: k, value: v, updated_at: new Date().toISOString() }); } catch {}
+    }, 600);
+  },
+};
+
+const store = CLOUD ? cloudStore : localStore;
+
+/* En modo nube: asegura que el usuario autenticado tenga su registro de
+   jugador. El primer usuario en registrarse queda como admin de las
+   comunidades de ejemplo (que vienen con admin "demo"). */
+function ensureCloudPlayer(user, players, setPlayers, setCommunities) {
+  const found = players.find((p) => p.id === user.id);
+  if (found) return found;
+  const meta = user.user_metadata || {};
+  const rec = {
+    id: user.id,
+    name: meta.name || (user.email || "").split("@")[0],
+    last: meta.last || "",
+    email: user.email,
+    birth: meta.birth || "",
+    plan: "free",
+    communities: [],
+  };
+  const isFirstAccount = !players.some((p) => p.email);
+  setPlayers((prev) => (prev.some((p) => p.id === user.id) ? prev : [...prev, rec]));
+  if (isFirstAccount) {
+    setCommunities((prev) => prev.map((c) => (c.admin === "demo"
+      ? { ...c, admin: user.id, members: c.members.includes(user.id) ? c.members : [user.id, ...c.members.filter((m) => m !== "demo")] }
+      : c)));
+  }
+  return rec;
+}
 
 /* ---------------- ESTILOS ---------------- */
 const FONT_LINK = "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,900;1,9..144,500&family=Spline+Sans:wght@400;500;600;700&display=swap";
@@ -558,8 +612,28 @@ function Auth({ onAuth, players, setPlayers }) {
   const [err, setErr] = useState("");
   const upd = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-  const submit = () => {
+  const submit = async () => {
     setErr("");
+    // MODO NUBE: cuentas seguras con Supabase Auth (la contraseña nunca se guarda en la app)
+    if (CLOUD) {
+      try {
+        if (mode === "login") {
+          const { data, error } = await sb.auth.signInWithPassword({ email: f.email, password: f.pass });
+          if (error) { setErr("Email o contraseña incorrectos."); return; }
+          onAuth({ cloudUser: data.user });
+        } else {
+          if (!f.name || !f.email || !f.pass) { setErr("Completa los campos obligatorios."); return; }
+          if (f.pass !== f.pass2) { setErr("Las contraseñas no coinciden."); return; }
+          if (f.pass.length < 6) { setErr("La contraseña debe tener al menos 6 caracteres."); return; }
+          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.pass, options: { data: { name: f.name, last: f.last, birth: f.birth } } });
+          if (error) { setErr(/already|registered/i.test(error.message) ? "Ese email ya está registrado." : "No se pudo crear la cuenta: " + error.message); return; }
+          if (!data.session) { setErr("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión."); return; }
+          onAuth({ cloudUser: data.user });
+        }
+      } catch { setErr("Error de conexión. Intenta de nuevo."); }
+      return;
+    }
+    // MODO LOCAL: cuentas guardadas en este navegador
     if (mode === "login") {
       const u = players.find((p) => p.email.toLowerCase() === f.email.toLowerCase() && p.pass === f.pass);
       if (!u) { setErr("Email o contraseña incorrectos."); return; }
@@ -567,7 +641,7 @@ function Auth({ onAuth, players, setPlayers }) {
     } else {
       if (!f.name || !f.email || !f.pass) { setErr("Completa los campos obligatorios."); return; }
       if (f.pass !== f.pass2) { setErr("Las contraseñas no coinciden."); return; }
-      if (players.some((p) => p.email.toLowerCase() === f.email.toLowerCase())) { setErr("Ese email ya está registrado."); return; }
+      if (players.some((p) => p.email && p.email.toLowerCase() === f.email.toLowerCase())) { setErr("Ese email ya está registrado."); return; }
       const u = { id: "U" + Date.now(), name: f.name, last: f.last, email: f.email, birth: f.birth, pass: f.pass, communities: [] };
       const next = [...players, u]; setPlayers(next); onAuth(u);
     }
@@ -605,7 +679,7 @@ function Auth({ onAuth, players, setPlayers }) {
           {mode === "signup" && <Field label="Repetir contraseña*"><input style={inputStyle} type="password" value={f.pass2} onChange={upd("pass2")} /></Field>}
           {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
           <Btn onClick={submit} style={{ width: "100%", marginTop: 4 }}>{mode === "login" ? "Entrar" : "Crear cuenta"}</Btn>
-          {mode === "login" && (
+          {mode === "login" && !CLOUD && (
             <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: "#6b7a72" }}>
               Demo: usa <b style={{color:C.green}}>demo@golf.com</b> / <b style={{color:C.green}}>demo</b>
             </div>
@@ -1872,42 +1946,78 @@ export default function App() {
   const [roundCommunity, setRoundCommunity] = useState(null);
   const [events, setEvents] = useState([]);
 
-  // seed + load
+  // Carga (o siembra) todas las colecciones y devuelve la lista de jugadores.
+  // En modo nube solo debe llamarse con sesión iniciada (las políticas RLS
+  // bloquean la lectura a usuarios anónimos y devolverían los defaults).
+  const loadData = async () => {
+    const seededPlayers = await store.get("gb_players_v2", null);
+    // En modo nube no existe la cuenta demo: cada quien crea su cuenta real.
+    const base = seededPlayers || (CLOUD ? [...KFB_PLAYERS] : [
+      { id: "demo", name: "Demo", last: "Player", email: "demo@golf.com", birth: "1990-01-01", pass: "demo", plan: "free", communities: ["amarillo65", "kfb"] },
+      ...KFB_PLAYERS,
+    ]);
+    setPlayers(base);
+    setCommunities(await store.get("gb_comm_v2", CLOUD ? [KORN_FERRY_COMMUNITY] : [EXAMPLE_COMMUNITY, KORN_FERRY_COMMUNITY]));
+    setCourses(await store.get("gb_courses_v2", [EXAMPLE_COURSE, LOS_INKAS_COURSE]));
+    let defaultRounds = [];
+    try {
+      const ev = buildKFBExampleEvent();
+      const rules = { rulePct: KORN_FERRY_COMMUNITY.rulePct, tokenValue: KORN_FERRY_COMMUNITY.tokenValue, bet: KORN_FERRY_COMMUNITY.bet, medal: KORN_FERRY_COMMUNITY.medal, regla8: KORN_FERRY_COMMUNITY.regla8, currency: KORN_FERRY_COMMUNITY.currency };
+      defaultRounds = [{ ...ev, results: computeEvent(JSON.parse(JSON.stringify(ev)), LOS_INKAS_COURSE, rules) }];
+    } catch (e) { defaultRounds = []; }
+    setRounds(await store.get("gb_rounds_v2", defaultRounds));
+    setEvents(await store.get("gb_events_v1", []));
+    return base;
+  };
+
+  // arranque
   useEffect(() => {
     (async () => {
-      const seededPlayers = await store.get("gb_players_v2", null);
-      const base = seededPlayers || [
-        { id: "demo", name: "Demo", last: "Player", email: "demo@golf.com", birth: "1990-01-01", pass: "demo", plan: "free", communities: ["amarillo65", "kfb"] },
-        ...KFB_PLAYERS,
-      ];
-      setPlayers(base);
-      setCommunities(await store.get("gb_comm_v2", [EXAMPLE_COMMUNITY, KORN_FERRY_COMMUNITY]));
-      setCourses(await store.get("gb_courses_v2", [EXAMPLE_COURSE, LOS_INKAS_COURSE]));
-      let defaultRounds = [];
-      try {
-        const ev = buildKFBExampleEvent();
-        const rules = { rulePct: KORN_FERRY_COMMUNITY.rulePct, tokenValue: KORN_FERRY_COMMUNITY.tokenValue, bet: KORN_FERRY_COMMUNITY.bet, medal: KORN_FERRY_COMMUNITY.medal, regla8: KORN_FERRY_COMMUNITY.regla8, currency: KORN_FERRY_COMMUNITY.currency };
-        defaultRounds = [{ ...ev, results: computeEvent(JSON.parse(JSON.stringify(ev)), LOS_INKAS_COURSE, rules) }];
-      } catch (e) { defaultRounds = []; }
-      setRounds(await store.get("gb_rounds_v2", defaultRounds));
-      setEvents(await store.get("gb_events_v1", []));
-      const savedMeId = await store.get("gb_me_v1", null);
-      if (savedMeId) { const u = base.find((p) => p.id === savedMeId); if (u) setMe(u); }
+      if (CLOUD) {
+        const { data } = await sb.auth.getSession();
+        const u = data?.session?.user;
+        if (u) {
+          const base = await loadData();
+          setMe(base.find((p) => p.id === u.id) || ensureCloudPlayer(u, base, setPlayers, setCommunities));
+        }
+        // Sin sesión no se cargan datos: se cargan recién al iniciar sesión.
+      } else {
+        const base = await loadData();
+        const savedMeId = await localStore.get("gb_me_v1", null);
+        if (savedMeId) { const u = base.find((p) => p.id === savedMeId); if (u) setMe(u); }
+      }
       setReady(true);
     })();
   }, []);
 
-  useEffect(() => { if (ready) store.set("gb_players_v2", players); }, [players, ready]);
-  useEffect(() => { if (ready) store.set("gb_comm_v2", communities); }, [communities, ready]);
-  useEffect(() => { if (ready) store.set("gb_courses_v2", courses); }, [courses, ready]);
-  useEffect(() => { if (ready) store.set("gb_rounds_v2", rounds); }, [rounds, ready]);
-  useEffect(() => { if (ready) store.set("gb_events_v1", events); }, [events, ready]);
+  // Persistencia: en modo nube solo se escribe con sesión iniciada (me).
+  const canWrite = ready && (!CLOUD || !!me);
+  useEffect(() => { if (canWrite) store.set("gb_players_v2", players); }, [players, canWrite]);
+  useEffect(() => { if (canWrite) store.set("gb_comm_v2", communities); }, [communities, canWrite]);
+  useEffect(() => { if (canWrite) store.set("gb_courses_v2", courses); }, [courses, canWrite]);
+  useEffect(() => { if (canWrite) store.set("gb_rounds_v2", rounds); }, [rounds, canWrite]);
+  useEffect(() => { if (canWrite) store.set("gb_events_v1", events); }, [events, canWrite]);
 
   const exampleCommunity = communities.find((c) => c.id === "amarillo65") || EXAMPLE_COMMUNITY;
   const exampleCourse = courses.find((c) => c.id === "asia") || EXAMPLE_COURSE;
 
-  const login = (u) => { setMe(u); store.set("gb_me_v1", u.id); };
-  const logout = () => { setMe(null); setView("home"); store.set("gb_me_v1", null); };
+  const login = async (u) => {
+    if (CLOUD && u.cloudUser) {
+      // Primero se cargan los datos compartidos y recién entonces se crea
+      // (si hace falta) el registro del jugador — nunca antes, para no
+      // pisar los datos de la nube con los valores de ejemplo.
+      setReady(false);
+      const base = await loadData();
+      setMe(base.find((p) => p.id === u.cloudUser.id) || ensureCloudPlayer(u.cloudUser, base, setPlayers, setCommunities));
+      setReady(true);
+      return;
+    }
+    setMe(u); localStore.set("gb_me_v1", u.id);
+  };
+  const logout = () => {
+    if (CLOUD) sb.auth.signOut();
+    setMe(null); setView("home"); localStore.set("gb_me_v1", null);
+  };
 
   if (!ready) return <div style={{ minHeight: 400, display: "grid", placeItems: "center", color: C.green }}>Cargando…</div>;
   if (!me) return <div style={{ fontFamily: "'Spline Sans',sans-serif" }}><Auth onAuth={login} players={players} setPlayers={setPlayers} /></div>;

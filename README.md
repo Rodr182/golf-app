@@ -31,15 +31,41 @@ estático (Vercel, Netlify, GitHub Pages, etc.).
 Incluye datos de ejemplo: la comunidad **Korn Ferry Boys** (25 jugadores) con
 una fecha jugada en Golf Los Inkas, y la cancha Asia Golf.
 
-## Dónde se guardan los datos
+## Dos modos de funcionamiento
 
-Por ahora los datos se guardan en el navegador de cada usuario
-(`localStorage`). El siguiente paso del proyecto es conectar la carpeta
-`backend/` con Supabase para que las cuentas, comunidades y rondas se
-compartan entre todos los usuarios.
+**Modo local (así viene por defecto):** los datos se guardan en el navegador
+de cada usuario. Sirve para probar; nada se comparte entre dispositivos.
+
+**Modo nube (recomendado para usarla con tu grupo):** cuentas reales y datos
+compartidos entre todos, usando [Supabase](https://supabase.com) (gratis).
+
+### Cómo activar el modo nube
+
+1. Crea una cuenta en [supabase.com](https://supabase.com) y un proyecto
+   nuevo (el plan Free basta).
+2. En el panel del proyecto, abre **SQL Editor**, pega el contenido de
+   `supabase/migrations/20260718000000_init.sql` y presiona **Run**.
+3. En **Authentication → Sign In / Up → Email**, desactiva
+   **"Confirm email"** (para que tus amigos entren sin paso de confirmación).
+4. En **Project Settings → API** copia la **Project URL** y la clave
+   **anon public**, y pégalas en `frontend/src/config.js`.
+5. Vuelve a publicar la app (`npm run build` o el deploy automático).
+
+El primer usuario que se registre queda como administrador de la comunidad
+Korn Ferry Boys.
+
+## Publicación automática (GitHub Pages)
+
+Cada vez que se sube un cambio a GitHub, la acción
+`.github/workflows/deploy.yml` construye la app y la publica en
+`https://<usuario>.github.io/golf-app/`.
+
+Solo hace falta activarlo una vez: en GitHub, **Settings → Pages →
+Build and deployment → Source: "GitHub Actions"**.
 
 ## Estructura
 
 - `frontend/` — la web app (React + Vite). Toda la lógica está en `frontend/src/App.jsx`.
-- `backend/` — esqueleto de servidor Express (aún sin implementar).
-- `supabase/` — configuración local de Supabase (aún sin usar).
+- `frontend/src/config.js` — credenciales de Supabase (vacías = modo local).
+- `supabase/migrations/` — el esquema de la base de datos para el modo nube.
+- `backend/` — esqueleto de servidor Express (no se usa; Supabase lo reemplaza).
