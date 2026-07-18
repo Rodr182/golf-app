@@ -1,0 +1,90 @@
+# Configura el proyecto de Supabase de GolfBuddy usando la API de administración.
+# Se ejecuta manualmente (workflow_dispatch); el token se pasa como input y se
+# enmascara en los logs — nunca se guarda en el repositorio.
+name: Configurar Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      sb_token:
+        description: "Supabase personal access token"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configurar proyecto Supabase
+        env:
+          SB_TOKEN: ${{ inputs.sb_token }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$SB_TOKEN"
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+
+          echo "== Buscando proyectos existentes =="
+          projects=$(api https://api.supabase.com/v1/projects)
+          echo "$projects" | jq -r '.[] | "\(.id) \(.name) \(.status)"' || { echo "ERROR: token invalido o sin acceso"; echo "$projects"; exit 1; }
+
+          # Preferir un proyecto cuyo nombre contenga "golf"; si no, el primero; si no hay, crear uno.
+          ref=$(echo "$projects" | jq -r '[.[] | select(.name | test("golf"; "i"))][0].id // empty')
+          [ -z "$ref" ] && ref=$(echo "$projects" | jq -r '.[0].id // empty')
+
+          if [ -z "$ref" ]; then
+            echo "== No hay proyectos: creando uno nuevo =="
+            org=$(api https://api.supabase.com/v1/organizations | jq -r '.[0].id')
+            dbpass=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)
+            created=$(api -X POST https://api.supabase.com/v1/projects \
+              -d "{\"name\":\"golfbuddy\",\"organization_id\":\"$org\",\"db_pass\":\"$dbpass\",\"region\":\"sa-east-1\"}")
+            ref=$(echo "$created" | jq -r '.id // empty')
+            [ -z "$ref" ] && { echo "ERROR creando proyecto:"; echo "$created"; exit 1; }
+          fi
+          echo "Proyecto elegido: $ref"
+
+          echo "== Esperando a que el proyecto este activo =="
+          for i in $(seq 1 60); do
+            status=$(api "https://api.supabase.com/v1/projects/$ref" | jq -r '.status')
+            echo "  estado: $status"
+            [ "$status" = "ACTIVE_HEALTHY" ] && break
+            sleep 10
+          done
+          [ "$status" = "ACTIVE_HEALTHY" ] || { echo "ERROR: el proyecto no llego a estar activo"; exit 1; }
+
+          echo "== Creando tabla y politicas (idempotente) =="
+          sql='create table if not exists public.collections (key text primary key, value jsonb not null, updated_at timestamptz not null default now()); alter table public.collections enable row level security; drop policy if exists "authenticated can read" on public.collections; create policy "authenticated can read" on public.collections for select to authenticated using (true); drop policy if exists "authenticated can insert" on public.collections; create policy "authenticated can insert" on public.collections for insert to authenticated with check (true); drop policy if exists "authenticated can update" on public.collections; create policy "authenticated can update" on public.collections for update to authenticated using (true);'
+          api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg q "$sql" '{query:$q}')"
+          echo ""
+
+          echo "== Verificando la tabla =="
+          api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d '{"query":"select count(*) from public.collections;"}'
+          echo ""
+
+          echo "== Desactivando confirmacion de email =="
+          api -X PATCH "https://api.supabase.com/v1/projects/$ref/config/auth" -d '{"mailer_autoconfirm":true}' | jq '{mailer_autoconfirm}'
+
+          echo "== Obteniendo claves publicas =="
+          keys=$(api "https://api.supabase.com/v1/projects/$ref/api-keys")
+          anon=$(echo "$keys" | jq -r '.[] | select(.name=="anon") | .api_key')
+          service=$(echo "$keys" | jq -r '.[] | select(.name=="service_role") | .api_key')
+          echo "::add-mask::$service"
+          url="https://$ref.supabase.co"
+
+          echo "== Probando registro de cuenta (signup) =="
+          resp=$(curl -sS -X POST "$url/auth/v1/signup" -H "apikey: $anon" -H "Content-Type: application/json" \
+            -d '{"email":"prueba.golfbuddy@gmail.com","password":"prueba-123456"}')
+          if echo "$resp" | jq -e '.access_token' > /dev/null; then
+            echo "SIGNUP_TEST=ok"
+            uid=$(echo "$resp" | jq -r '.user.id')
+            curl -sS -X DELETE "$url/auth/v1/admin/users/$uid" -H "apikey: $service" -H "Authorization: Bearer $service" > /dev/null && echo "usuario de prueba eliminado"
+          else
+            echo "SIGNUP_TEST=fail"
+            echo "$resp"
+          fi
+
+          echo "===================================="
+          echo "RESULT_URL=$url"
+          echo "RESULT_ANON=$anon"
+          echo "===================================="
