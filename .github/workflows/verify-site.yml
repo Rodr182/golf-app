@@ -1,0 +1,40 @@
+# Verifica que el sitio publicado en GitHub Pages responda correctamente.
+name: Verificar sitio
+
+on:
+  workflow_dispatch:
+
+permissions:
+  pages: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Estado de Pages y del sitio
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "== Configuracion de Pages (API) =="
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages" | head -20 || true
+          echo ""
+          echo "== Probando el sitio =="
+          code=000
+          for i in 1 2 3 4 5 6 7 8; do
+            code=$(curl -sL -o /tmp/site.html -w "%{http_code}" "https://rodr182.github.io/golf-app/")
+            echo "intento $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 20
+          done
+          if [ "$code" = "200" ]; then
+            echo "SITE_OK"
+            grep -o "<title>[^<]*</title>" /tmp/site.html || true
+            js=$(grep -o 'assets/[^"]*\.js' /tmp/site.html | head -1)
+            echo "bundle: $js"
+            curl -s "https://rodr182.github.io/golf-app/$js" -o /tmp/app.js
+            grep -c "supabase" /tmp/app.js > /dev/null && echo "BUNDLE_HAS_SUPABASE=yes" || echo "BUNDLE_HAS_SUPABASE=no"
+            grep -c "shjeytwdjxpgnnrbaxqh" /tmp/app.js > /dev/null && echo "BUNDLE_HAS_PROJECT_URL=yes" || echo "BUNDLE_HAS_PROJECT_URL=no"
+          else
+            echo "SITE_FAIL"
+          fi
