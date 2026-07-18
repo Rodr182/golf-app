@@ -6,13 +6,16 @@ name: Configurar Supabase
 on:
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: write
 
 jobs:
   setup:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Configurar proyecto Supabase
+        id: sb
         env:
           SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
@@ -81,5 +84,33 @@ jobs:
 
           echo "===================================="
           echo "RESULT_URL=$url"
-          echo "RESULT_ANON=$anon"
           echo "===================================="
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "anon=$anon" >> "$GITHUB_OUTPUT"
+
+      - name: Conectar la app (escribir config.js) y subir a main
+        env:
+          REF: ${{ steps.sb.outputs.ref }}
+          ANON: ${{ steps.sb.outputs.anon }}
+        run: |
+          set -euo pipefail
+          cat > frontend/src/config.js <<EOF
+          /*
+            Credenciales del proyecto Supabase (escritas automáticamente por
+            .github/workflows/setup-supabase.yml). Son valores públicos por
+            diseño: la seguridad la dan las políticas RLS de la base de datos.
+            Si se dejan vacíos, la app vuelve al modo local (datos en el navegador).
+          */
+          export const SUPABASE_URL = "https://$REF.supabase.co";
+          export const SUPABASE_ANON_KEY = "$ANON";
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/config.js
+          if git diff --cached --quiet; then
+            echo "config.js ya estaba al dia"
+          else
+            git commit -m "Conectar la app al proyecto Supabase (modo nube)"
+            git push
+            echo "config.js actualizado y subido"
+          fi
