@@ -1072,6 +1072,8 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
   const [courseId, setCourseId] = useState(initialEvent?.courseId || courses[0]?.id);
   const [communityId, setCommunityId] = useState(initialEvent?.communityId || communities[0]?.id);
   const [teams, setTeams] = useState(initialEvent?.teams || [{ id: 1, start: 1, players: [], pairs: [] }]);
+  const [scoringTeam, setScoringTeam] = useState(null);   // equipo abierto en la entrada de scores
+  const [entryMode, setEntryMode] = useState("hole");     // "hole" | "matrix"
 
   const course = courses.find((c) => c.id === courseId) || courses[0];
   const community = communities.find((c) => c.id === communityId) || communities[0];
@@ -1228,20 +1230,66 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
         </div>
       )}
 
-      {step === 3 && (
-        <div>
-          <div style={{ marginBottom: 12, color: "#7a8780", fontSize: 13.5 }}>Ingresa los golpes brutos por hoyo. Edita las celdas directamente.</div>
-          <ScoreMatrix event={{ teams }} course={course} onChange={setGross} />
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16 }}>
-            <Btn variant="danger" onClick={onCancel}>Cancelar</Btn>
-            <div style={{ display: "flex", gap: 10 }}>
-              <Btn variant="ghost" onClick={() => setStep(2)}>← Atrás</Btn>
-              <Btn variant="gold" disabled={!allFilled} onClick={() => setStep(4)}>Terminar ronda →</Btn>
+      {step === 3 && (() => {
+        const teamFilled = (tm) => tm.players.every((p) => p.gross.every((g) => g !== "" && g != null));
+        const t = teams.find((x) => x.id === scoringTeam) || (teams.length === 1 ? teams[0] : null);
+        return (
+          <div>
+            {t ? (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                  <div>
+                    {teams.length > 1 && <button onClick={() => setScoringTeam(null)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", padding: 0, fontSize: 13.5, fontFamily: "'Spline Sans',sans-serif" }}>← Todos los equipos</button>}
+                    <div style={{ fontWeight: 700 }}>Equipo {t.id} · salida hoyo {t.start}</div>
+                    <div style={{ fontSize: 13, color: "#7a8780" }}>Golpes brutos por hoyo · solo números enteros.</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 4, background: C.creamDk, borderRadius: 10, padding: 3 }}>
+                    {[["hole", "Hoyo por hoyo"], ["matrix", "Tarjeta completa"]].map(([m, l]) => (
+                      <button key={m} onClick={() => setEntryMode(m)} style={{ border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 12px", fontWeight: 700, fontSize: 12.5,
+                        fontFamily: "'Spline Sans',sans-serif", background: entryMode === m ? C.green : "transparent", color: entryMode === m ? C.cream : C.green }}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                {entryMode === "hole" ? (
+                  <HoleByHole key={t.id} course={course} start={t.start} playerList={t.players}
+                    scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))}
+                    rulePct={community.rulePct} onSet={(pid, h, v) => setGross(t.id, pid, h, v)} />
+                ) : (
+                  <ScoreMatrix event={{ teams: [t] }} course={course} onChange={setGross} />
+                )}
+                <GroupLiveSummary course={course} playerList={t.players}
+                  scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))} rulePct={community.rulePct} />
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {teams.map((tm) => {
+                  const done = teamFilled(tm);
+                  return (
+                    <Card key={tm.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>Equipo {tm.id} · salida hoyo {tm.start}</div>
+                        <div style={{ color: "#7a8780", fontSize: 13 }}>{tm.players.map((p) => p.name).join(", ")}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
+                        <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringTeam(tm.id)}>{done ? "Editar" : "Llenar scores"}</Btn>
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16 }}>
+              <Btn variant="danger" onClick={onCancel}>Cancelar</Btn>
+              <div style={{ display: "flex", gap: 10 }}>
+                <Btn variant="ghost" onClick={() => { setScoringTeam(null); setStep(2); }}>← Atrás</Btn>
+                <Btn variant="gold" disabled={!allFilled} onClick={() => { setScoringTeam(null); setStep(4); }}>Terminar ronda →</Btn>
+              </div>
             </div>
+            {!allFilled && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8, textAlign: "right" }}>Completa todos los scores para terminar.</div>}
           </div>
-          {!allFilled && <div style={{ color: C.red, fontSize: 13, marginTop: 8, textAlign: "right" }}>Completa todos los scores.</div>}
-        </div>
-      )}
+        );
+      })()}
 
       {step === 4 && results && (
         <div>
@@ -1562,10 +1610,16 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         <Card style={{ padding: 18, marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
             <div style={{ fontWeight: 700 }}>Inscritos ({registered.length})</div>
-            <Btn variant={iAmIn ? "danger" : "gold"} onClick={() => toggleRegister(me.id)}>{iAmIn ? "Salir del evento" : "Inscribirme"}</Btn>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Btn variant="ghost" onClick={() => {
+                const msg = `⛳ *${community.name}* — nuevo evento:\n*${event.name}*\n📅 ${event.date} · ${course?.name || ""}\n\nInscríbete en la app: ${window.location.origin}${window.location.pathname}`;
+                window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank");
+              }}>📲 Avisar por WhatsApp</Btn>
+              <Btn variant={iAmIn ? "danger" : "gold"} onClick={() => toggleRegister(me.id)}>{iAmIn ? "Salir del evento" : "Inscribirme"}</Btn>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-            {registered.length === 0 && <div style={{ color: "#7a8780", fontSize: 13.5 }}>Nadie inscrito todavía.</div>}
+            {registered.length === 0 && <div style={{ color: "#7a8780", fontSize: 13.5 }}>Nadie inscrito todavía. Usa "Avisar por WhatsApp" para convocar a la comunidad.</div>}
             {registered.map((id) => <Chip key={id} tone="green">{resolveName(id, players)}</Chip>)}
           </div>
         </Card>
@@ -1759,10 +1813,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 }
 
 
-function CommunityDetail({ community, rounds, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onBack, onStartRound }) {
-  const [tab, setTab] = useState("jugadores");
+function CommunityDetail({ community, rounds, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onBack, onStartRound, initialEventId }) {
+  const [tab, setTab] = useState(initialEventId ? "eventos" : "jugadores");
   const [openRound, setOpenRound] = useState(null);
-  const [managingEventId, setManagingEventId] = useState(null);
+  const [managingEventId, setManagingEventId] = useState(initialEventId || null);
   const [creatingEvent, setCreatingEvent] = useState(false);
   const [evForm, setEvForm] = useState({ name: "", courseId: courses[0]?.id, date: new Date().toISOString().slice(0, 10) });
   const cur = community.currency;
@@ -2144,6 +2198,11 @@ export default function App() {
   const [openCommunity, setOpenCommunity] = useState(null);
   const [roundCommunity, setRoundCommunity] = useState(null);
   const [events, setEvents] = useState([]);
+  const [quickRound, setQuickRound] = useState(false); // "Iniciar Ronda": true = ronda casual sin evento
+  const [eventJump, setEventJump] = useState(null);    // id de evento a abrir directamente en la comunidad
+
+  // Al cambiar de pantalla, volver al tope de la página
+  useEffect(() => { window.scrollTo(0, 0); }, [view, openCommunity]);
 
   // Carga (o siembra) todas las colecciones y devuelve la lista de jugadores.
   // En modo nube solo debe llamarse con sesión iniciada (las políticas RLS
@@ -2228,8 +2287,22 @@ export default function App() {
   const toggleCommunityPro = (c) => setCommunities((prev) => prev.map((x) => (x.id === c.id ? { ...x, pro: !x.pro } : x)));
   const myPro = userIsPro(me);
 
+  // Eventos activos en mis comunidades (para avisos y para "Iniciar Ronda")
+  const myOpenEvents = events.filter((e) => {
+    const c = communities.find((x) => x.id === e.communityId);
+    return c && (c.members.includes(me.id) || c.admin === me.id) && e.status !== "cerrado";
+  });
+  const needRegister = myOpenEvents.filter((e) => e.status === "inscripcion" && !(e.registered || []).includes(me.id));
+  const inPlay = myOpenEvents.filter((e) => e.status !== "inscripcion" && (e.registered || []).includes(me.id));
+  const goToEvent = (ev) => {
+    const c = communities.find((x) => x.id === ev.communityId);
+    if (!c) return;
+    setEventJump(ev.id); setOpenCommunity(c); setView("communities");
+  };
+  const EVJUMP_STATUS = { inscripcion: ["Inscripción abierta", "gold"], grupos: ["Armando grupos", "gold"], jugando: ["En juego", "green"] };
+
   const NavBtn = ({ id, label }) => (
-    <button onClick={() => { setView(id); setOpenCommunity(null); }} style={{
+    <button onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); }} style={{
       border: "none", cursor: "pointer", background: view === id ? "rgba(200,230,160,.16)" : "transparent",
       color: view === id ? C.lime : "rgba(246,241,227,.75)", fontWeight: 600, fontSize: 14.5, padding: "8px 14px", borderRadius: 10, fontFamily: "'Spline Sans',sans-serif" }}>{label}</button>
   );
@@ -2270,6 +2343,36 @@ export default function App() {
       <div style={{ maxWidth: 980, margin: "0 auto", padding: isMobile ? "18px 14px 110px" : "26px 18px 60px" }}>
         {view === "home" && (
           <div>
+            {/* AVISOS: eventos con inscripción abierta o rondas en juego */}
+            {(needRegister.length > 0 || inPlay.length > 0) && (
+              <div style={{ display: "grid", gap: 10, marginBottom: 18 }}>
+                {needRegister.map((e) => {
+                  const c = communities.find((x) => x.id === e.communityId);
+                  return (
+                    <Card key={e.id} style={{ padding: 14, border: `1.5px solid ${C.gold}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, background: "rgba(212,168,67,.07)" }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>📣 Nuevo evento: {e.name}</div>
+                        <div style={{ fontSize: 13, color: "#7a8780" }}>{c?.name} · {e.date} · inscripción abierta ({(e.registered || []).length} inscritos)</div>
+                      </div>
+                      <Btn variant="gold" onClick={() => goToEvent(e)}>Inscribirme →</Btn>
+                    </Card>
+                  );
+                })}
+                {inPlay.map((e) => {
+                  const c = communities.find((x) => x.id === e.communityId);
+                  const [lbl] = EVJUMP_STATUS[e.status] || ["—"];
+                  return (
+                    <Card key={e.id} style={{ padding: 14, border: `1.5px solid ${C.green}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>⛳ {e.name} <Chip tone="green">{lbl}</Chip></div>
+                        <div style={{ fontSize: 13, color: "#7a8780" }}>{c?.name} · {e.date}</div>
+                      </div>
+                      <Btn onClick={() => goToEvent(e)}>Continuar →</Btn>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
             <div style={{ background: `linear-gradient(135deg, ${C.green}, ${C.greenDeep})`, borderRadius: 22, padding: "34px 30px", color: C.cream, position: "relative", overflow: "hidden", marginBottom: 24 }}>
               <div style={{ position: "absolute", right: -40, top: -40, width: 220, height: 220, borderRadius: 999, border: `2px solid rgba(200,230,160,.18)` }} />
               <div style={{ position: "absolute", right: 10, bottom: -60, width: 180, height: 180, borderRadius: 999, border: `2px solid rgba(212,168,67,.22)` }} />
@@ -2323,22 +2426,54 @@ export default function App() {
             events={events}
             setEvents={setEvents}
             courses={courses}
+            initialEventId={eventJump}
             onUpdateCommunity={(uc) => { setCommunities((prev) => prev.map((x) => (x.id === uc.id ? uc : x))); setOpenCommunity(uc); }}
             onSaveRound={(round) => setRounds((r) => [round, ...r])}
-            onBack={() => setOpenCommunity(null)}
+            onBack={() => { setOpenCommunity(null); setEventJump(null); }}
             onStartRound={() => { setRoundCommunity(openCommunity.id); setOpenCommunity(null); setView("round"); }}
           />
         )}
 
-        {view === "round" && (
+        {view === "round" && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (
+          <div>
+            <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green, marginBottom: 6 }}>Iniciar Ronda</div>
+            <div style={{ fontSize: 13.5, color: "#7a8780", marginBottom: 14 }}>Tienes eventos activos en tus comunidades. Continúa ahí, o crea una ronda casual aparte.</div>
+            <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+              {myOpenEvents.map((e) => {
+                const c = communities.find((x) => x.id === e.communityId);
+                const [lbl, tone] = EVJUMP_STATUS[e.status] || ["—", "neutral"];
+                const registered = (e.registered || []).includes(me.id);
+                return (
+                  <Card key={e.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{e.name} <Chip tone={tone}>{lbl}</Chip></div>
+                      <div style={{ fontSize: 13, color: "#7a8780", marginTop: 2 }}>{c?.name} · {e.date}{e.status === "inscripcion" ? ` · ${(e.registered || []).length} inscritos` : ""}</div>
+                    </div>
+                    <Btn variant={e.status === "inscripcion" && !registered ? "gold" : "primary"} onClick={() => goToEvent(e)}>
+                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : "Continuar →"}
+                    </Btn>
+                  </Card>
+                );
+              })}
+            </div>
+            <Card style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, background: C.cream }}>
+              <div>
+                <div style={{ fontWeight: 700 }}>Ronda casual (sin evento)</div>
+                <div style={{ fontSize: 13, color: "#7a8780" }}>Para un juego suelto: armas los equipos y anotas los scores igual que en un evento.</div>
+              </div>
+              <Btn variant="ghost" onClick={() => setQuickRound(true)}>Crear ronda rápida</Btn>
+            </Card>
+          </div>
+        )}
+        {view === "round" && (roundCommunity || quickRound || myOpenEvents.length === 0) && (
           <StartRound
             courses={courses}
             communities={myCommunities}
             players={players}
             me={me}
             initialEvent={roundCommunity ? { communityId: roundCommunity } : null}
-            onCancel={() => { setRoundCommunity(null); setView("home"); }}
-            onSave={(ev) => { setRounds((r) => [ev, ...r]); setRoundCommunity(null); setView("player"); }}
+            onCancel={() => { setRoundCommunity(null); setQuickRound(false); setView("home"); }}
+            onSave={(ev) => { setRounds((r) => [ev, ...r]); setRoundCommunity(null); setQuickRound(false); setView("player"); }}
           />
         )}
       </div>
@@ -2357,7 +2492,7 @@ export default function App() {
           {NAV_ITEMS.map(([id, label, icon]) => {
             const active = view === id;
             return (
-              <button key={id} onClick={() => { setView(id); setOpenCommunity(null); }} style={{
+              <button key={id} onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); }} style={{
                 border: "none", cursor: "pointer", background: active ? "rgba(200,230,160,.14)" : "transparent",
                 color: active ? C.lime : "rgba(246,241,227,.7)", padding: "9px 2px 8px",
                 display: "grid", justifyItems: "center", gap: 2, fontFamily: "'Spline Sans',sans-serif" }}>
