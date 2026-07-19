@@ -718,7 +718,7 @@ function ScoreMatrix({ event, course, onChange }) {
               <React.Fragment key={p.id}>
                 <div style={{ padding: "6px 10px", fontWeight: 600, fontSize: 13.5, background: C.cream, borderTop: `1px solid ${C.line}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                 {p.gross.map((g, h) => (
-                  <input key={h} value={g} onChange={(e) => { const v = e.target.value.replace(/[^0-9]/g, ""); onChange(t.id, p.id, h, v === "" ? "" : parseInt(v)); }}
+                  <input key={h} value={g} inputMode="numeric" pattern="[0-9]*" onChange={(e) => { const v = e.target.value.replace(/[^0-9]/g, ""); onChange(t.id, p.id, h, v === "" ? "" : parseInt(v)); }}
                     style={{ border: `1px solid ${C.line}`, borderTop: `1px solid ${C.line}`, textAlign: "center", fontFamily: "'Spline Sans'", fontSize: 14, padding: "6px 0", outline: "none", background: "#fff", minWidth: 30 }} />
                 ))}
               </React.Fragment>
@@ -726,6 +726,184 @@ function ScoreMatrix({ event, course, onChange }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---------------- ENTRADA HOYO POR HOYO + RESUMEN INTERNO ---------------- */
+/* Resumen parcial del grupo: puntos por hoyo (neto) solo sobre los hoyos que
+   TODOS los jugadores ya llenaron. Es informativo; el cálculo oficial (caminos,
+   carry over, bye) se hace al consolidar el evento. */
+function partialGroupSummary(course, playerList, scores, rulePct) {
+  const si = course.strokes;
+  const nums = playerList.map((p) => ({ ...p, adj: adjustedHcp(parseInt(p.hcp) || 0, rulePct) }));
+  if (!nums.length) return null;
+  const base = Math.min(...nums.map((p) => p.adj));
+  const ph = {}; nums.forEach((p) => (ph[p.id] = Math.min(p.adj - base, 18)));
+  const filledHoles = [];
+  for (let h = 0; h < 18; h++) {
+    if (nums.every((p) => { const v = (scores[p.id] || [])[h]; return v !== "" && v != null; })) filledHoles.push(h);
+  }
+  const net = {}; nums.forEach((p) => (net[p.id] = si.map((s, h) => ((scores[p.id] || [])[h] ?? 0) - strokesOnHole(ph[p.id], s))));
+  const pts = {}; nums.forEach((p) => (pts[p.id] = { front: 0, back: 0, total: 0 }));
+  const addPts = (bucket, key, h) => { bucket[key].total++; if (h < 9) bucket[key].front++; else bucket[key].back++; };
+  filledHoles.forEach((h) => {
+    let min = Infinity; nums.forEach((p) => { if (net[p.id][h] < min) min = net[p.id][h]; });
+    nums.forEach((p) => { if (net[p.id][h] === min) addPts(pts, p.id, h); });
+  });
+  // Parejas (best ball) solo con 4 jugadores: los 2 primeros vs los 2 últimos
+  let pairs = null;
+  if (nums.length === 4) {
+    const prs = [[nums[0], nums[1]], [nums[2], nums[3]]];
+    const pNet = prs.map((pr) => si.map((_, h) => Math.min(net[pr[0].id][h], net[pr[1].id][h])));
+    const pPts = [{ front: 0, back: 0, total: 0 }, { front: 0, back: 0, total: 0 }];
+    filledHoles.forEach((h) => {
+      const m = Math.min(pNet[0][h], pNet[1][h]);
+      pNet.forEach((n, i) => { if (n[h] === m) { pPts[i].total++; if (h < 9) pPts[i].front++; else pPts[i].back++; } });
+    });
+    pairs = prs.map((pr, i) => ({ label: pr[0].name.split(" ")[0] + " & " + pr[1].name.split(" ")[0], ...pPts[i] }));
+  }
+  return { holes: filledHoles.length, ph, players: nums, pts, pairs };
+}
+
+function GroupLiveSummary({ course, playerList, scores, rulePct }) {
+  const s = partialGroupSummary(course, playerList, scores, rulePct);
+  if (!s || s.holes === 0) return null;
+  const sorted = [...s.players].sort((a, b) => s.pts[b.id].total - s.pts[a.id].total);
+  const cellR = { padding: "5px 8px", textAlign: "right" };
+  return (
+    <Card style={{ padding: 14, marginTop: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: C.green }}>Resumen interno del grupo</div>
+        <Chip tone="neutral">{s.holes} de 18 hoyos contados</Chip>
+      </div>
+      <div style={{ overflowX: "auto", marginTop: 8 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <thead><tr style={{ color: "#7a8780", textAlign: "right" }}>
+            <th style={{ textAlign: "left", padding: "4px 8px" }}>Individual</th>
+            <th style={cellR}>Front</th><th style={cellR}>Back</th><th style={cellR}>Total</th>
+          </tr></thead>
+          <tbody>
+            {sorted.map((p, i) => (
+              <tr key={p.id} style={{ borderTop: `1px solid ${C.line}`, textAlign: "right", background: i === 0 ? "rgba(212,168,67,.10)" : "transparent" }}>
+                <td style={{ textAlign: "left", padding: "5px 8px", fontWeight: 600 }}>{p.name} {i === 0 && <span style={{ color: C.gold }}>★</span>}</td>
+                <td style={cellR}>{s.pts[p.id].front}</td>
+                <td style={cellR}>{s.pts[p.id].back}</td>
+                <td style={{ ...cellR, fontWeight: 800 }}>{s.pts[p.id].total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {s.pairs && (
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+            <thead><tr style={{ color: "#7a8780", textAlign: "right" }}>
+              <th style={{ textAlign: "left", padding: "4px 8px" }}>Parejas (best ball)</th>
+              <th style={cellR}>Front</th><th style={cellR}>Back</th><th style={cellR}>Total</th>
+            </tr></thead>
+            <tbody>
+              {s.pairs.map((pr, i) => (
+                <tr key={i} style={{ borderTop: `1px solid ${C.line}`, textAlign: "right" }}>
+                  <td style={{ textAlign: "left", padding: "5px 8px", fontWeight: 600 }}>{pr.label}</td>
+                  <td style={cellR}>{pr.front}</td><td style={cellR}>{pr.back}</td>
+                  <td style={{ ...cellR, fontWeight: 800 }}>{pr.total}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>
+        Puntos por hoyo ganado o empatado (score neto). Es un avance con los hoyos completos; el resultado oficial con caminos, carry over y bye se calcula al consolidar el evento.
+      </div>
+    </Card>
+  );
+}
+
+/* Entrada de scores hoyo por hoyo, en el orden de salida del grupo. */
+function HoleByHole({ course, start, playerList, scores, rulePct, onSet }) {
+  const order = playOrder(start);
+  const isFilled = (pid, h) => { const v = (scores[pid] || [])[h]; return v !== "" && v != null; };
+  const holeDone = (h) => playerList.every((p) => isFilled(p.id, h));
+  const firstPending = order.findIndex((h) => !holeDone(h));
+  const [pos, setPos] = useState(firstPending === -1 ? 0 : firstPending);
+  const h = order[Math.min(Math.max(pos, 0), 17)];
+  const done = order.filter(holeDone).length;
+
+  // strokes que recibe cada jugador en este hoyo (para mostrar los puntos)
+  const adj = {}; playerList.forEach((p) => (adj[p.id] = adjustedHcp(parseInt(p.hcp) || 0, rulePct)));
+  const base = Math.min(...playerList.map((p) => adj[p.id]));
+  const strokesHere = (pid) => strokesOnHole(Math.min(adj[pid] - base, 18), course.strokes[h]);
+
+  const setVal = (pid, v) => onSet(pid, h, v);
+  const bump = (pid, d) => {
+    const cur = (scores[pid] || [])[h];
+    if (cur === "" || cur == null) { setVal(pid, course.pars[h]); return; }
+    const next = Math.min(15, Math.max(1, cur + d));
+    setVal(pid, next);
+  };
+  const typed = (pid) => (e) => {
+    const clean = e.target.value.replace(/[^0-9]/g, "").slice(0, 2);
+    setVal(pid, clean === "" ? "" : Math.min(15, Math.max(1, parseInt(clean, 10))));
+  };
+
+  const stepBtn = { border: `1.5px solid ${C.line}`, background: "#fff", color: C.green, cursor: "pointer", borderRadius: 12, width: 46, height: 46, fontSize: 22, fontWeight: 800, lineHeight: 1 };
+
+  return (
+    <div>
+      {/* progreso: un punto por hoyo en orden de juego */}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
+        {order.map((oh, i) => {
+          const cur = i === pos;
+          const filled = holeDone(oh);
+          return (
+            <button key={oh} onClick={() => setPos(i)} title={`Hoyo ${oh + 1}`} style={{
+              border: "none", cursor: "pointer", width: 26, height: 26, borderRadius: 8, fontSize: 11, fontWeight: 700,
+              background: cur ? C.gold : filled ? C.green : C.creamDk,
+              color: cur ? "#2c2003" : filled ? C.cream : "#9aa69e" }}>{oh + 1}</button>
+          );
+        })}
+      </div>
+
+      <Card style={{ padding: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          <div style={{ fontFamily: "'Fraunces'", fontWeight: 900, fontSize: 30, color: C.green }}>Hoyo {h + 1}</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Chip tone="green">Par {course.pars[h]}</Chip>
+            <Chip tone="neutral">SI {course.strokes[h]}</Chip>
+            <Chip tone={done === 18 ? "gold" : "neutral"}>{done}/18 completos</Chip>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gap: 10 }}>
+          {playerList.map((p) => {
+            const v = (scores[p.id] || [])[h];
+            const st = strokesHere(p.id);
+            return (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, background: C.cream, borderRadius: 14, padding: "10px 12px" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: st > 0 ? C.gold : "#9aa69e", fontWeight: 700 }}>
+                    {st > 0 ? "●".repeat(Math.min(st, 3)) + ` recibe ${st} stroke${st > 1 ? "s" : ""}` : "sin stroke aquí"}
+                  </div>
+                </div>
+                <button style={stepBtn} onClick={() => bump(p.id, -1)} aria-label="menos">−</button>
+                <input value={v ?? ""} onChange={typed(p.id)} inputMode="numeric" pattern="[0-9]*" placeholder="·" style={{
+                  width: 56, height: 46, textAlign: "center", fontSize: 22, fontWeight: 800, fontFamily: "'Spline Sans'",
+                  border: `1.5px solid ${v === "" || v == null ? C.line : C.green}`, borderRadius: 12, outline: "none",
+                  background: "#fff", color: v != null && v !== "" && v < course.pars[h] ? "#3fa46a" : v != null && v !== "" && v > course.pars[h] ? C.red : C.ink }} />
+                <button style={stepBtn} onClick={() => bump(p.id, 1)} aria-label="más">+</button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
+          <Btn variant="ghost" disabled={pos === 0} onClick={() => setPos(Math.max(0, pos - 1))}>← Hoyo {pos > 0 ? order[pos - 1] + 1 : ""}</Btn>
+          <Btn disabled={pos === 17} onClick={() => setPos(Math.min(17, pos + 1))}>Hoyo {pos < 17 ? order[pos + 1] + 1 : ""} →</Btn>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -912,7 +1090,7 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
     const exists = t.players.find((p) => p.id === pid);
     let players2;
     if (exists) players2 = t.players.filter((p) => p.id !== pid);
-    else { if (t.players.length >= 5) return; const rec = players.find((x) => x.id === pid); players2 = [...t.players, { id: pid, name: memberPool.find((m) => m.id === pid)?.name || pid, hcp: rec && typeof rec.hcp === "number" ? rec.hcp : 0, gross: new Array(18).fill(course.pars[0]) }]; }
+    else { if (t.players.length >= 5) return; const rec = players.find((x) => x.id === pid); players2 = [...t.players, { id: pid, name: memberPool.find((m) => m.id === pid)?.name || pid, hcp: rec && typeof rec.hcp === "number" ? rec.hcp : 0, gross: new Array(18).fill("") }]; }
     setTeam(tid, { players: players2, pairs: autoPairs(players2) });
   };
   const setHcp = (tid, pid, v) => {
@@ -1314,6 +1492,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const registered = event.registered || [];
   const groups = event.groups || [];
   const [scoringGroup, setScoringGroup] = useState(null);
+  const [entryMode, setEntryMode] = useState("hole"); // "hole" = hoyo por hoyo · "matrix" = tarjeta completa
 
   const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
@@ -1487,30 +1666,50 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   if (event.status === "jugando") {
     const g = groups.find((x) => x.id === scoringGroup);
     if (g) {
+      const playerList = g.playerIds.map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
       return (
         <div>
           <Head />
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>Grupo {g.id} · anotador: {resolveName(g.scorerId, players)}</div>
-          <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 12 }}>Ingresa los golpes brutos por hoyo.</div>
-          <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 14 }}>
-            <div style={{ minWidth: 30 * 19 + 140 }}>
-              <div style={{ display: "grid", gridTemplateColumns: `140px repeat(18, minmax(30px,1fr))` }}>
-                <div style={{ ...cellHead, textAlign: "left", paddingLeft: 10 }}>Hoyo</div>
-                {course.pars.map((_, i) => <div key={i} style={cellHead}>{i + 1}</div>)}
-                <div style={{ ...cellHead, background: "#143b2c", textAlign: "left", paddingLeft: 10 }}>Par</div>
-                {course.pars.map((p, i) => <div key={i} style={{ ...cellHead, background: "#143b2c", color: C.cream }}>{p}</div>)}
-                {g.playerIds.map((pid) => (
-                  <React.Fragment key={pid}>
-                    <div style={{ padding: "6px 10px", fontWeight: 600, fontSize: 13, background: C.cream, borderTop: `1px solid ${C.line}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{resolveName(pid, players)}</div>
-                    {Array.from({ length: 18 }, (_, h) => (
-                      <input key={h} value={(g.scores[pid] || [])[h] ?? ""} onChange={(e) => setGroupScore(g.id, pid, h, e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))}
-                        style={{ border: `1px solid ${C.line}`, textAlign: "center", fontFamily: "'Spline Sans'", fontSize: 14, padding: "6px 0", outline: "none", background: "#fff", minWidth: 30 }} />
-                    ))}
-                  </React.Fragment>
-                ))}
-              </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700 }}>Grupo {g.id} · anotador: {resolveName(g.scorerId, players)}</div>
+              <div style={{ fontSize: 13, color: "#7a8780" }}>Golpes brutos por hoyo · solo números enteros.</div>
+            </div>
+            <div style={{ display: "flex", gap: 4, background: C.creamDk, borderRadius: 10, padding: 3 }}>
+              {[["hole", "Hoyo por hoyo"], ["matrix", "Tarjeta completa"]].map(([m, l]) => (
+                <button key={m} onClick={() => setEntryMode(m)} style={{ border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 12px", fontWeight: 700, fontSize: 12.5,
+                  fontFamily: "'Spline Sans',sans-serif", background: entryMode === m ? C.green : "transparent", color: entryMode === m ? C.cream : C.green }}>{l}</button>
+              ))}
             </div>
           </div>
+
+          {entryMode === "hole" ? (
+            <HoleByHole key={g.id} course={course} start={g.start} playerList={playerList} scores={g.scores} rulePct={community.rulePct}
+              onSet={(pid, h, v) => setGroupScore(g.id, pid, h, v)} />
+          ) : (
+            <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 14 }}>
+              <div style={{ minWidth: 30 * 19 + 140 }}>
+                <div style={{ display: "grid", gridTemplateColumns: `140px repeat(18, minmax(30px,1fr))` }}>
+                  <div style={{ ...cellHead, textAlign: "left", paddingLeft: 10 }}>Hoyo</div>
+                  {course.pars.map((_, i) => <div key={i} style={cellHead}>{i + 1}</div>)}
+                  <div style={{ ...cellHead, background: "#143b2c", textAlign: "left", paddingLeft: 10 }}>Par</div>
+                  {course.pars.map((p, i) => <div key={i} style={{ ...cellHead, background: "#143b2c", color: C.cream }}>{p}</div>)}
+                  {g.playerIds.map((pid) => (
+                    <React.Fragment key={pid}>
+                      <div style={{ padding: "6px 10px", fontWeight: 600, fontSize: 13, background: C.cream, borderTop: `1px solid ${C.line}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{resolveName(pid, players)}</div>
+                      {Array.from({ length: 18 }, (_, h) => (
+                        <input key={h} value={(g.scores[pid] || [])[h] ?? ""} inputMode="numeric" pattern="[0-9]*" onChange={(e) => setGroupScore(g.id, pid, h, e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))}
+                          style={{ border: `1px solid ${C.line}`, textAlign: "center", fontFamily: "'Spline Sans'", fontSize: 14, padding: "6px 0", outline: "none", background: "#fff", minWidth: 30 }} />
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <GroupLiveSummary course={course} playerList={playerList} scores={g.scores} rulePct={community.rulePct} />
+
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
             <Btn variant="ghost" onClick={() => setScoringGroup(null)}>← Grupos</Btn>
             <Btn variant="gold" disabled={!groupFilled(g)} onClick={() => setScoringGroup(null)}>Guardar scores del grupo</Btn>
