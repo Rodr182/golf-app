@@ -186,9 +186,9 @@ function computeEvent(event, course, rules) {
     const ind = resolveContest(iNets, t.start, bet, strokeFlagFor(t.players.map((p) => ({ key: "" + p.id, ph: ph[p.id] }))));
     t.players.forEach((p) => {
       money[p.id].team += ind.perContestant["" + p.id].total;
-      detail[p.id].contests.push({ name: "Individual Equipo", scope: "equipo", ...ind.perContestant["" + p.id], meta: ind.meta });
+      detail[p.id].contests.push({ name: "Individual interno", scope: "equipo", ...ind.perContestant["" + p.id], meta: ind.meta });
     });
-    mkBreakdown("equipo", `Individual · Equipo ${t.id}`, t.start, ind, t.players.map((p) => ({ key: "" + p.id, label: p.name })));
+    mkBreakdown("equipo", `Individual interno · Grupo ${t.id}`, t.start, ind, t.players.map((p) => ({ key: "" + p.id, label: p.name })));
 
     // Team Pairs. 4 jugadores: 1 match (2 parejas). 5 jugadores: 3 matches rotativos
     // (AB vs ZX, AC vs ZX, BC vs ZX) con pareja fija = los 2 primeros. Misma repartición de caminos.
@@ -211,7 +211,7 @@ function computeEvent(event, course, rules) {
         return { key: "PR" + mi + "_" + i, net: n, weight: 1, members: pr };
       });
       const pr = resolveContest(pNets, t.start, bet);
-      const label = ps.length === 5 ? `Parejas ${mi + 1}` : "Parejas Equipo";
+      const label = ps.length === 5 ? `Parejas ${mi + 1}` : "Parejas";
       pNets.forEach((pn) => pn.members.forEach((pid) => {
         money[pid].team += pr.perContestant[pn.key].total;
         detail[pid].contests.push({ name: label, scope: "equipo", ...pr.perContestant[pn.key], meta: pr.meta, pairWith: pn.members.filter((x) => x !== pid).map((x) => playerName[x]) });
@@ -232,9 +232,9 @@ function computeEvent(event, course, rules) {
   const gi = resolveContest(giNets, eventStart, bet, strokeFlagFor(allIds.map((id) => ({ key: "" + id, ph: gph[id] }))));
   allIds.forEach((id) => {
     money[id].group += gi.perContestant["" + id].total;
-    detail[id].contests.push({ name: "Individual Evento", scope: "evento", ...gi.perContestant["" + id], meta: gi.meta });
+    detail[id].contests.push({ name: "Individual general", scope: "evento", ...gi.perContestant["" + id], meta: gi.meta });
   });
-  mkBreakdown("evento", "Individual General", eventStart, gi, allIds.map((id) => ({ key: "" + id, label: playerName[id] })));
+  mkBreakdown("evento", "Individual general", eventStart, gi, allIds.map((id) => ({ key: "" + id, label: playerName[id] })));
 
   // Teams vs Teams. Para 3 jug se presta un jugador (team.loanPlayerId) y para 5 se elimina uno (team.dropPlayerId).
   if (teams.length > 1) {
@@ -254,9 +254,9 @@ function computeEvent(event, course, rules) {
     const tvt = resolveContest(tvtNets, eventStart, bet);
     teams.forEach((t) => t.players.forEach((p) => {
       money[p.id].group += tvt.perContestant["T" + t.id].total;
-      detail[p.id].contests.push({ name: "Equipo vs Equipo", scope: "evento", ...tvt.perContestant["T" + t.id], meta: tvt.meta });
+      detail[p.id].contests.push({ name: "Grupos vs. Grupos", scope: "evento", ...tvt.perContestant["T" + t.id], meta: tvt.meta });
     }));
-    mkBreakdown("evento", "Equipo vs Equipo", eventStart, tvt, tvtNets.map((tn) => ({ key: tn.key, label: "Equipo " + tn.key.slice(1), members: tn.members })));
+    mkBreakdown("evento", "Grupos vs. Grupos", eventStart, tvt, tvtNets.map((tn) => ({ key: tn.key, label: "Grupo " + tn.key.slice(1), members: tn.members })));
   }
 
   // Medal: gana el menor score neto TOTAL (gross total − hcp ajustado al % del Medal). Configurable por comunidad.
@@ -1291,7 +1291,7 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                   ))}
                   {t.players.length === 3 && (
                     <div style={{ marginTop: 10, padding: 10, background: C.cream, borderRadius: 10 }}>
-                      <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 6 }}>3 jugadores → sin parejas. Para <b>Equipo vs Equipo</b> se presta un jugador de otro grupo:</div>
+                      <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 6 }}>3 jugadores → sin parejas. Para <b>Grupos vs. Grupos</b> se presta un jugador de otro grupo:</div>
                       <select style={{ ...inputStyle, padding: "8px 10px" }} value={t.loanPlayerId || ""} onChange={(e) => setTeam(t.id, { loanPlayerId: e.target.value || null })}>
                         <option value="">Automático (primer disponible)</option>
                         {playersInOtherTeams(t.id).map((pid) => {
@@ -1311,7 +1311,7 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                   {t.players.length === 5 && (
                     <div style={{ marginTop: 10, padding: 10, background: C.cream, borderRadius: 10 }}>
                       <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 6 }}>
-                        Pareja fija: <b>{t.players[0].name} & {t.players[1].name}</b>. Parejas rotativas (3 matches): los otros 3 forman <b>{t.players[2].name}&{t.players[3].name}</b>, <b>{t.players[2].name}&{t.players[4].name}</b> y <b>{t.players[3].name}&{t.players[4].name}</b>, cada una vs la pareja fija. Para <b>Equipo vs Equipo</b> se elimina un jugador:
+                        Pareja fija: <b>{t.players[0].name} & {t.players[1].name}</b>. Parejas rotativas (3 matches): los otros 3 forman <b>{t.players[2].name}&{t.players[3].name}</b>, <b>{t.players[2].name}&{t.players[4].name}</b> y <b>{t.players[3].name}&{t.players[4].name}</b>, cada una vs la pareja fija. Para <b>Grupos vs. Grupos</b> se elimina un jugador:
                       </div>
                       <button onClick={() => { const sh = shuffleIds(t.players); setTeam(t.id, { players: sh, pairs: autoPairs(sh) }); }}
                         style={{ border: `1.5px solid ${C.gold}`, background: "rgba(212,168,67,.10)", color: C.green, cursor: "pointer", borderRadius: 9, padding: "5px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", marginBottom: 8 }}>🎲 Sortear pareja fija</button>
@@ -1800,11 +1800,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                       </Field>
                       {g.playerIds.length === 3 && (
                         <div style={{ fontSize: 12.5, color: "#7a8780", alignSelf: "end", paddingBottom: 14 }}>
-                          Grupo de 3: el jugador <b>prestado</b> para Equipo vs Equipo se elige al final, al consolidar el evento.
+                          Grupo de 3: el jugador <b>prestado</b> para Grupos vs. Grupos se elige al final, al consolidar el evento.
                         </div>
                       )}
                       {g.playerIds.length === 5 && (
-                        <Field label="Eliminar (Eq. vs Eq.)">
+                        <Field label="Eliminar (Grupos vs. Grupos)">
                           <select style={{ ...inputStyle, padding: "8px 10px" }} value={g.dropPlayerId || ""} onChange={(e) => setGroup(g.id, { dropPlayerId: e.target.value || null })}>
                             <option value="">Automático</option>
                             {g.playerIds.map((pid) => <option key={pid} value={pid}>{resolveName(pid, players)}</option>)}
@@ -1934,7 +1934,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           <Card style={{ padding: 18, marginBottom: 14, border: `1.5px solid ${C.gold}` }}>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 6 }}>Jugador prestado para grupos de 3</div>
             <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 12 }}>
-              Para el concurso <b>Equipo vs Equipo</b>, cada grupo de 3 recibe un jugador prestado de otro grupo, que entra con el score que ya jugó.
+              Para el concurso <b>Grupos vs. Grupos</b>, cada grupo de 3 recibe un jugador prestado de otro grupo, que entra con el score que ya jugó.
             </div>
             {threeGroups.map((tg) => (
               <Field key={tg.id} label={`Prestado para el Grupo ${tg.id} (${tg.playerIds.map((id) => resolveName(id, players).split(" ")[0]).join(", ")})`}>
