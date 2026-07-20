@@ -1638,7 +1638,9 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
 }
 
 /* ---------------- GESTOR DE EVENTOS (inscripción → grupos → juego → consolidación) ---------------- */
-function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onClose }) {
+/* mode: "admin" = gestión desde la comunidad (sin llenado de scores);
+   "play" = anotación de scores desde Iniciar Ronda. */
+function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onClose, mode = "admin" }) {
   const course = courses.find((c) => c.id === event.courseId) || courses[0];
   const admin = isAdmin(community, me.id);
   const updateEvent = (patch) => setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, ...patch } : e)));
@@ -1647,6 +1649,8 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const groups = event.groups || [];
   const [scoringGroup, setScoringGroup] = useState(null);
   const [entryMode, setEntryMode] = useState("hole"); // "hole" = hoyo por hoyo · "matrix" = tarjeta completa
+  const [loanStep, setLoanStep] = useState(false);    // elección del jugador prestado al consolidar
+  const [loanChoices, setLoanChoices] = useState({}); // {groupId: playerId}
 
   const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
@@ -1684,13 +1688,15 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const allGroupsReady = groups.length >= 1 && groups.every((g) => g.playerIds.length >= 3 && g.scorerId);
   const allScored = groups.length >= 1 && groups.every(groupFilled);
 
-  const consolidate = () => {
+  // El jugador prestado (grupos de 3) se decide recién al consolidar, con
+  // todos los scores ya ingresados: llega en `choices` como {groupId: playerId}.
+  const consolidate = (choices = {}) => {
     const teams = groups.map((g, i) => {
       const ids = groupOrder(g); // respeta el sorteo de parejas hecho en el tee
       return {
         id: i + 1, start: g.start,
         players: ids.map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: typeof g.hcps[pid] === "number" ? g.hcps[pid] : parseInt(g.hcps[pid]) || 0, gross: g.scores[pid].map((s) => parseInt(s)) })),
-        pairs: autoPairsIds(ids), loanPlayerId: g.loanPlayerId, dropPlayerId: g.dropPlayerId,
+        pairs: autoPairsIds(ids), loanPlayerId: choices[g.id] || g.loanPlayerId, dropPlayerId: g.dropPlayerId,
       };
     });
     const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
@@ -1707,7 +1713,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         <div style={{ color: "#7a8780", fontSize: 13.5, marginTop: 4 }}>{course?.name} · {event.date}</div>
         <div style={{ marginTop: 8 }}><Chip tone={event.status === "cerrado" ? "neutral" : "gold"}>{STATUS[event.status]}</Chip></div>
       </div>
-      <Btn variant="ghost" onClick={onClose}>← Volver a eventos</Btn>
+      <Btn variant="ghost" onClick={onClose}>{mode === "play" ? "← Volver" : "← Volver a eventos"}</Btn>
     </div>
   );
 
@@ -1793,12 +1799,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                         </select>
                       </Field>
                       {g.playerIds.length === 3 && (
-                        <Field label="Préstamo (Eq. vs Eq.)">
-                          <select style={{ ...inputStyle, padding: "8px 10px" }} value={g.loanPlayerId || ""} onChange={(e) => setGroup(g.id, { loanPlayerId: e.target.value || null })}>
-                            <option value="">Automático</option>
-                            {groupPlayerIds(g.id).map((pid) => <option key={pid} value={pid}>{resolveName(pid, players)}</option>)}
-                          </select>
-                        </Field>
+                        <div style={{ fontSize: 12.5, color: "#7a8780", alignSelf: "end", paddingBottom: 14 }}>
+                          Grupo de 3: el jugador <b>prestado</b> para Equipo vs Equipo se elige al final, al consolidar el evento.
+                        </div>
                       )}
                       {g.playerIds.length === 5 && (
                         <Field label="Eliminar (Eq. vs Eq.)">
@@ -1832,7 +1835,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   }
 
   if (event.status === "jugando") {
-    const g = groups.find((x) => x.id === scoringGroup);
+    const g = mode === "play" ? groups.find((x) => x.id === scoringGroup) : null;
     if (g) {
       // el orden sorteado define las parejas del resumen interno
       const playerList = groupOrder(g).map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
@@ -1886,9 +1889,24 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         </div>
       );
     }
+    const threeGroups = groups.filter((x) => x.playerIds.length === 3);
+    const grossTotal = (pid) => {
+      for (const gr of groups) { const s = gr.scores[pid]; if (s && s.length) return s.reduce((sum, v) => sum + (parseInt(v) || 0), 0); }
+      return null;
+    };
+    const allLoansChosen = threeGroups.every((x) => loanChoices[x.id]);
+    const startConsolidate = () => {
+      if (threeGroups.length > 0) { setLoanChoices({}); setLoanStep(true); }
+      else consolidate({});
+    };
     return (
       <div>
         <Head />
+        {mode === "admin" && (
+          <Card style={{ padding: 12, marginBottom: 12, background: C.cream }}>
+            <div style={{ fontSize: 13, color: "#3a4a42" }}>ℹ️ Los scores se anotan desde <b>Iniciar Ronda</b> (cada anotador entra ahí desde su celular). Aquí puedes ver el avance, gestionar las parejas y consolidar al final.</div>
+          </Card>
+        )}
         <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
           {groups.map((g) => {
             const done = groupFilled(g);
@@ -1903,18 +1921,42 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
-                    <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringGroup(g.id)}>{done ? "Editar" : "Llenar scores"}</Btn>
+                    {mode === "play" && <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringGroup(g.id)}>{done ? "Editar" : "Llenar scores"}</Btn>}
                   </div>
                 </div>
-                <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final, mode) => setGroup(g.id, { drawnOrder: final, drawnMode: mode })} />
+                <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final, dm) => setGroup(g.id, { drawnOrder: final, drawnMode: dm })} />
               </Card>
             );
           })}
         </div>
-        {admin && (
+
+        {admin && loanStep && (
+          <Card style={{ padding: 18, marginBottom: 14, border: `1.5px solid ${C.gold}` }}>
+            <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 6 }}>Jugador prestado para grupos de 3</div>
+            <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 12 }}>
+              Para el concurso <b>Equipo vs Equipo</b>, cada grupo de 3 recibe un jugador prestado de otro grupo, que entra con el score que ya jugó.
+            </div>
+            {threeGroups.map((tg) => (
+              <Field key={tg.id} label={`Prestado para el Grupo ${tg.id} (${tg.playerIds.map((id) => resolveName(id, players).split(" ")[0]).join(", ")})`}>
+                <select style={inputStyle} value={loanChoices[tg.id] || ""} onChange={(e) => setLoanChoices({ ...loanChoices, [tg.id]: e.target.value || undefined })}>
+                  <option value="">Elegir jugador…</option>
+                  {groups.filter((x) => x.id !== tg.id).flatMap((x) => x.playerIds).map((pid) => (
+                    <option key={pid} value={pid}>{resolveName(pid, players)} — {grossTotal(pid) ?? "?"} golpes</option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <Btn variant="ghost" onClick={() => setLoanStep(false)}>Cancelar</Btn>
+              <Btn variant="gold" disabled={!allLoansChosen} onClick={() => { setLoanStep(false); consolidate(loanChoices); }}>Confirmar y consolidar →</Btn>
+            </div>
+          </Card>
+        )}
+
+        {admin && !loanStep && (
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <Btn variant="ghost" onClick={() => updateEvent({ status: "grupos" })}>← Grupos</Btn>
-            <Btn variant="gold" disabled={!allScored} onClick={consolidate}>Consolidar resultados →</Btn>
+            <Btn variant="gold" disabled={!allScored} onClick={startConsolidate}>Consolidar resultados →</Btn>
           </div>
         )}
         {!allScored && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8 }}>Cuando todos los grupos estén completos, el admin consolida el evento.</div>}
@@ -2319,6 +2361,7 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [quickRound, setQuickRound] = useState(false); // "Iniciar Ronda": true = ronda casual sin evento
   const [eventJump, setEventJump] = useState(null);    // id de evento a abrir directamente en la comunidad
+  const [playEventId, setPlayEventId] = useState(null); // evento abierto en modo anotación (Iniciar Ronda)
 
   // Al cambiar de pantalla, volver al tope de la página
   useEffect(() => { window.scrollTo(0, 0); }, [view, openCommunity]);
@@ -2421,7 +2464,7 @@ export default function App() {
   const EVJUMP_STATUS = { inscripcion: ["Inscripción abierta", "gold"], grupos: ["Armando grupos", "gold"], jugando: ["En juego", "green"] };
 
   const NavBtn = ({ id, label }) => (
-    <button onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); }} style={{
+    <button onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); setPlayEventId(null); }} style={{
       border: "none", cursor: "pointer", background: view === id ? "rgba(200,230,160,.16)" : "transparent",
       color: view === id ? C.lime : "rgba(246,241,227,.75)", fontWeight: 600, fontSize: 14.5, padding: "8px 14px", borderRadius: 10, fontFamily: "'Spline Sans',sans-serif" }}>{label}</button>
   );
@@ -2486,7 +2529,7 @@ export default function App() {
                         <div style={{ fontWeight: 700 }}>⛳ {e.name} <Chip tone="green">{lbl}</Chip></div>
                         <div style={{ fontSize: 13, color: "#7a8780" }}>{c?.name} · {e.date}</div>
                       </div>
-                      <Btn onClick={() => goToEvent(e)}>Continuar →</Btn>
+                      <Btn onClick={() => { if (e.status === "jugando") { setPlayEventId(e.id); setView("round"); } else goToEvent(e); }}>{e.status === "jugando" ? "Anotar scores →" : "Continuar →"}</Btn>
                     </Card>
                   );
                 })}
@@ -2553,7 +2596,16 @@ export default function App() {
           />
         )}
 
-        {view === "round" && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (
+        {view === "round" && playEventId && (() => {
+          const ev = events.find((x) => x.id === playEventId);
+          const comm = ev && communities.find((c) => c.id === ev.communityId);
+          if (!ev || !comm) return null;
+          return (
+            <EventManager mode="play" event={ev} community={comm} courses={courses} players={players} me={me}
+              setEvents={setEvents} onSaveRound={(round) => setRounds((r) => [round, ...r])} onClose={() => setPlayEventId(null)} />
+          );
+        })()}
+        {view === "round" && !playEventId && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (
           <div>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green, marginBottom: 6 }}>Iniciar Ronda</div>
             <div style={{ fontSize: 13.5, color: "#7a8780", marginBottom: 14 }}>Tienes eventos activos en tus comunidades. Continúa ahí, o crea una ronda casual aparte.</div>
@@ -2568,8 +2620,9 @@ export default function App() {
                       <div style={{ fontWeight: 700 }}>{e.name} <Chip tone={tone}>{lbl}</Chip></div>
                       <div style={{ fontSize: 13, color: "#7a8780", marginTop: 2 }}>{c?.name} · {e.date}{e.status === "inscripcion" ? ` · ${(e.registered || []).length} inscritos` : ""}</div>
                     </div>
-                    <Btn variant={e.status === "inscripcion" && !registered ? "gold" : "primary"} onClick={() => goToEvent(e)}>
-                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : "Continuar →"}
+                    <Btn variant={e.status === "inscripcion" && !registered ? "gold" : "primary"}
+                      onClick={() => { if (e.status === "jugando") setPlayEventId(e.id); else goToEvent(e); }}>
+                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : e.status === "jugando" ? "Anotar scores →" : "Continuar →"}
                     </Btn>
                   </Card>
                 );
@@ -2584,7 +2637,7 @@ export default function App() {
             </Card>
           </div>
         )}
-        {view === "round" && (roundCommunity || quickRound || myOpenEvents.length === 0) && (
+        {view === "round" && !playEventId && (roundCommunity || quickRound || myOpenEvents.length === 0) && (
           <StartRound
             courses={courses}
             communities={myCommunities}
@@ -2611,7 +2664,7 @@ export default function App() {
           {NAV_ITEMS.map(([id, label, icon]) => {
             const active = view === id;
             return (
-              <button key={id} onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); }} style={{
+              <button key={id} onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); setPlayEventId(null); }} style={{
                 border: "none", cursor: "pointer", background: active ? "rgba(200,230,160,.14)" : "transparent",
                 color: active ? C.lime : "rgba(246,241,227,.7)", padding: "9px 2px 8px",
                 display: "grid", justifyItems: "center", gap: 2, fontFamily: "'Spline Sans',sans-serif" }}>
