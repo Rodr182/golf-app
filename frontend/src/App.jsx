@@ -337,6 +337,14 @@ function resolveName(id, players) {
 }
 const isAdmin = (community, meId) => community.admin === meId || (community.admins || []).includes(meId);
 const autoPairsIds = (ids) => (ids.length === 4 ? [[ids[0], ids[1]], [ids[2], ids[3]]] : []);
+// Barajado justo (Fisher-Yates) para el sorteo de parejas en el tee
+const shuffleIds = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+};
+// Orden efectivo de un grupo: el sorteado si existe y sigue vigente
+const groupOrder = (g) => (g.drawnOrder && g.drawnOrder.length === g.playerIds.length && g.drawnOrder.every((id) => g.playerIds.includes(id)) ? g.drawnOrder : g.playerIds);
 
 /* Money list de una comunidad: acumula por participante en todas sus rondas */
 function communityMoneyList(communityId, rounds) {
@@ -821,6 +829,56 @@ function GroupLiveSummary({ course, playerList, scores, rulePct }) {
   );
 }
 
+/* Sorteo de parejas en el tee: baraja los jugadores del grupo con una pequeña
+   animación. Con 4: pareja 1 vs pareja 2. Con 5: pareja fija + 3 que rotan. */
+function TeeDraw({ g, players, onDraw, canDraw }) {
+  const [spinning, setSpinning] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const n = g.playerIds.length;
+  if (n < 4) return <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>Grupo de 3: se juega individual, sin parejas.</div>;
+
+  const order = g.drawnOrder && g.drawnOrder.length === n && g.drawnOrder.every((id) => g.playerIds.includes(id)) ? g.drawnOrder : null;
+  const show = spinning ? preview : order;
+  const nm = (id) => resolveName(id, players).split(" ")[0];
+
+  const start = () => {
+    if (spinning) return;
+    if (order && !window.confirm("Ya hay un sorteo hecho. ¿Volver a sortear las parejas?")) return;
+    setSpinning(true);
+    let count = 0;
+    const iv = setInterval(() => {
+      setPreview(shuffleIds(g.playerIds));
+      if (++count >= 14) { clearInterval(iv); const final = shuffleIds(g.playerIds); setSpinning(false); setPreview(null); onDraw(final); }
+    }, 110);
+  };
+
+  return (
+    <div style={{ marginTop: 10, padding: "10px 12px", background: order || spinning ? "rgba(212,168,67,.10)" : C.cream, borderRadius: 12, border: `1.5px ${order || spinning ? "solid" : "dashed"} ${order || spinning ? C.gold : C.line}` }}>
+      {!show && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 13, color: "#7a8780" }}>Parejas aún sin sortear — se sortean en el tee de salida.</div>
+          {canDraw && <Btn variant="gold" onClick={start}>🎲 Sortear parejas</Btn>}
+        </div>
+      )}
+      {show && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>
+              {n === 4 ? (
+                <>🎲 <span style={{ color: C.green }}>{nm(show[0])} & {nm(show[1])}</span> <span style={{ color: "#9aa69e" }}>vs</span> <span style={{ color: C.green }}>{nm(show[2])} & {nm(show[3])}</span></>
+              ) : (
+                <>🎲 Pareja fija: <span style={{ color: C.green }}>{nm(show[0])} & {nm(show[1])}</span> <span style={{ color: "#9aa69e" }}>· rotan:</span> {nm(show[2])}, {nm(show[3])}, {nm(show[4])}</>
+              )}
+            </div>
+            {!spinning && canDraw && <button onClick={start} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>volver a sortear</button>}
+          </div>
+          {spinning && <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginTop: 4 }}>Sorteando…</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* Entrada de scores hoyo por hoyo, en el orden de salida del grupo. */
 function HoleByHole({ course, start, playerList, scores, rulePct, onSet }) {
   const order = playOrder(start);
@@ -1203,12 +1261,20 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                       </select>
                     </div>
                   )}
-                  {t.players.length === 4 && <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>Parejas: <b>{t.players[0].name} & {t.players[1].name}</b> · <b>{t.players[2].name} & {t.players[3].name}</b></div>}
+                  {t.players.length === 4 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
+                      <div style={{ fontSize: 12.5, color: "#7a8780" }}>Parejas: <b>{t.players[0].name} & {t.players[1].name}</b> · <b>{t.players[2].name} & {t.players[3].name}</b></div>
+                      <button onClick={() => { const sh = shuffleIds(t.players); setTeam(t.id, { players: sh, pairs: autoPairs(sh) }); }}
+                        style={{ border: `1.5px solid ${C.gold}`, background: "rgba(212,168,67,.10)", color: C.green, cursor: "pointer", borderRadius: 9, padding: "5px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>🎲 Sortear parejas</button>
+                    </div>
+                  )}
                   {t.players.length === 5 && (
                     <div style={{ marginTop: 10, padding: 10, background: C.cream, borderRadius: 10 }}>
                       <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 6 }}>
                         Pareja fija: <b>{t.players[0].name} & {t.players[1].name}</b>. Parejas rotativas (3 matches): los otros 3 forman <b>{t.players[2].name}&{t.players[3].name}</b>, <b>{t.players[2].name}&{t.players[4].name}</b> y <b>{t.players[3].name}&{t.players[4].name}</b>, cada una vs la pareja fija. Para <b>Equipo vs Equipo</b> se elimina un jugador:
                       </div>
+                      <button onClick={() => { const sh = shuffleIds(t.players); setTeam(t.id, { players: sh, pairs: autoPairs(sh) }); }}
+                        style={{ border: `1.5px solid ${C.gold}`, background: "rgba(212,168,67,.10)", color: C.green, cursor: "pointer", borderRadius: 9, padding: "5px 12px", fontWeight: 700, fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", marginBottom: 8 }}>🎲 Sortear pareja fija</button>
                       <select style={{ ...inputStyle, padding: "8px 10px" }} value={t.dropPlayerId || ""} onChange={(e) => setTeam(t.id, { dropPlayerId: e.target.value || null })}>
                         <option value="">Automático (el último)</option>
                         {t.players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1565,7 +1631,8 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     if (!has) { const rec = players.find((p) => p.id === pid); hcps[pid] = rec && typeof rec.hcp === "number" ? rec.hcp : 0; }
     else delete hcps[pid];
     const scorerId = g.scorerId === pid && has ? null : g.scorerId;
-    setGroup(gid, { playerIds, hcps, scorerId });
+    // si cambia la conformación del grupo, el sorteo de parejas anterior queda sin efecto
+    setGroup(gid, { playerIds, hcps, scorerId, drawnOrder: null });
   };
   const setGroupHcp = (gid, pid, v) => { const g = groups.find((x) => x.id === gid); setGroup(gid, { hcps: { ...g.hcps, [pid]: v } }); };
   const setGroupScore = (gid, pid, h, v) => {
@@ -1578,11 +1645,14 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const allScored = groups.length >= 1 && groups.every(groupFilled);
 
   const consolidate = () => {
-    const teams = groups.map((g, i) => ({
-      id: i + 1, start: g.start,
-      players: g.playerIds.map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: typeof g.hcps[pid] === "number" ? g.hcps[pid] : parseInt(g.hcps[pid]) || 0, gross: g.scores[pid].map((s) => parseInt(s)) })),
-      pairs: autoPairsIds(g.playerIds), loanPlayerId: g.loanPlayerId, dropPlayerId: g.dropPlayerId,
-    }));
+    const teams = groups.map((g, i) => {
+      const ids = groupOrder(g); // respeta el sorteo de parejas hecho en el tee
+      return {
+        id: i + 1, start: g.start,
+        players: ids.map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: typeof g.hcps[pid] === "number" ? g.hcps[pid] : parseInt(g.hcps[pid]) || 0, gross: g.scores[pid].map((s) => parseInt(s)) })),
+        pairs: autoPairsIds(ids), loanPlayerId: g.loanPlayerId, dropPlayerId: g.dropPlayerId,
+      };
+    });
     const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
     const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency };
     const results = computeEvent(JSON.parse(JSON.stringify(evObj)), course, rules);
@@ -1707,10 +1777,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               <Btn variant="ghost" onClick={addGroup}>+ Añadir grupo</Btn>
               <div style={{ display: "flex", gap: 10 }}>
                 <Btn variant="ghost" onClick={() => updateEvent({ status: "inscripcion" })}>← Inscripción</Btn>
-                <Btn disabled={!allGroupsReady} onClick={() => updateEvent({ status: "jugando" })}>Comenzar juego →</Btn>
+                <Btn disabled={!allGroupsReady} onClick={() => updateEvent({ status: "jugando" })}>Confirmar grupos →</Btn>
               </div>
             </div>
             {!allGroupsReady && <div style={{ color: C.red, fontSize: 13, marginTop: 8, textAlign: "right" }}>Cada grupo necesita 3–5 jugadores y un anotador.</div>}
+            <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 8, textAlign: "right" }}>Aquí solo se confirma quiénes juegan juntos y su salida — las parejas se sortean en el tee, al momento de salir.</div>
           </>
         )}
       </div>
@@ -1720,7 +1791,8 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   if (event.status === "jugando") {
     const g = groups.find((x) => x.id === scoringGroup);
     if (g) {
-      const playerList = g.playerIds.map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
+      // el orden sorteado define las parejas del resumen interno
+      const playerList = groupOrder(g).map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
       return (
         <div>
           <Head />
@@ -1777,17 +1849,21 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
           {groups.map((g) => {
             const done = groupFilled(g);
+            const canDraw = admin || g.playerIds.includes(me.id);
             return (
-              <Card key={g.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 700 }}>Grupo {g.id} · salida hoyo {g.start}</div>
-                  <div style={{ color: "#7a8780", fontSize: 13 }}>{g.playerIds.map((id) => resolveName(id, players)).join(", ")}</div>
-                  <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 3 }}>Anotador: {resolveName(g.scorerId, players)}</div>
+              <Card key={g.id} style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>Grupo {g.id} · salida hoyo {g.start}</div>
+                    <div style={{ color: "#7a8780", fontSize: 13 }}>{g.playerIds.map((id) => resolveName(id, players)).join(", ")}</div>
+                    <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 3 }}>Anotador: {resolveName(g.scorerId, players)}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
+                    <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringGroup(g.id)}>{done ? "Editar" : "Llenar scores"}</Btn>
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
-                  <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringGroup(g.id)}>{done ? "Editar" : "Llenar scores"}</Btn>
-                </div>
+                <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final) => setGroup(g.id, { drawnOrder: final })} />
               </Card>
             );
           })}
