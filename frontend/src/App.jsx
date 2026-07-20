@@ -829,48 +829,88 @@ function GroupLiveSummary({ course, playerList, scores, rulePct }) {
   );
 }
 
-/* Sorteo de parejas en el tee: baraja los jugadores del grupo con una pequeña
-   animación. Con 4: pareja 1 vs pareja 2. Con 5: pareja fija + 3 que rotan. */
+/* Parejas del grupo: se pueden SORTEAR en el tee (animación) o ELEGIR
+   manualmente si ya las armaron antes. Con 4: pareja 1 vs pareja 2.
+   Con 5: pareja fija + 3 que rotan. */
 function TeeDraw({ g, players, onDraw, canDraw }) {
   const [spinning, setSpinning] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState([]);
   const n = g.playerIds.length;
   if (n < 4) return <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>Grupo de 3: se juega individual, sin parejas.</div>;
 
   const order = g.drawnOrder && g.drawnOrder.length === n && g.drawnOrder.every((id) => g.playerIds.includes(id)) ? g.drawnOrder : null;
   const show = spinning ? preview : order;
   const nm = (id) => resolveName(id, players).split(" ")[0];
+  const manual = g.drawnMode === "manual";
 
   const start = () => {
     if (spinning) return;
-    if (order && !window.confirm("Ya hay un sorteo hecho. ¿Volver a sortear las parejas?")) return;
+    if (order && !window.confirm("¿Volver a sortear las parejas?")) return;
+    setPicking(false); setPicked([]);
     setSpinning(true);
     let count = 0;
     const iv = setInterval(() => {
       setPreview(shuffleIds(g.playerIds));
-      if (++count >= 14) { clearInterval(iv); const final = shuffleIds(g.playerIds); setSpinning(false); setPreview(null); onDraw(final); }
+      if (++count >= 14) { clearInterval(iv); const final = shuffleIds(g.playerIds); setSpinning(false); setPreview(null); onDraw(final, "sorteo"); }
     }, 110);
   };
 
+  const togglePick = (pid) => {
+    const next = picked.includes(pid) ? picked.filter((x) => x !== pid) : [...picked, pid];
+    if (next.length === 2) {
+      const rest = g.playerIds.filter((id) => !next.includes(id));
+      onDraw([...next, ...rest], "manual");
+      setPicking(false); setPicked([]);
+    } else setPicked(next);
+  };
+
+  const linkBtn = { border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 };
+
   return (
     <div style={{ marginTop: 10, padding: "10px 12px", background: order || spinning ? "rgba(212,168,67,.10)" : C.cream, borderRadius: 12, border: `1.5px ${order || spinning ? "solid" : "dashed"} ${order || spinning ? C.gold : C.line}` }}>
-      {!show && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 13, color: "#7a8780" }}>Parejas aún sin sortear — se sortean en el tee de salida.</div>
-          {canDraw && <Btn variant="gold" onClick={start}>🎲 Sortear parejas</Btn>}
+      {picking ? (
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.green, marginBottom: 8 }}>
+            {n === 4 ? "Toca a los 2 jugadores de la primera pareja:" : "Toca a los 2 jugadores de la pareja FIJA:"}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {g.playerIds.map((pid) => {
+              const sel = picked.includes(pid);
+              return (
+                <button key={pid} onClick={() => togglePick(pid)} style={{ border: `1.5px solid ${sel ? C.green : C.line}`, cursor: "pointer", borderRadius: 999, padding: "7px 14px", fontWeight: 600, fontSize: 13, background: sel ? C.green : "#fff", color: sel ? C.cream : C.ink }}>{nm(pid)}</button>
+              );
+            })}
+          </div>
+          <button onClick={() => { setPicking(false); setPicked([]); }} style={{ ...linkBtn, color: C.red, marginTop: 8 }}>Cancelar</button>
         </div>
-      )}
-      {show && (
+      ) : !show ? (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 13, color: "#7a8780" }}>Parejas por definir: sortéenlas en el tee, o elíjanlas si ya las armaron.</div>
+          {canDraw && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Btn variant="gold" onClick={start}>🎲 Sortear</Btn>
+              <Btn variant="ghost" onClick={() => { setPicking(true); setPicked([]); }}>✍️ Elegir parejas</Btn>
+            </div>
+          )}
+        </div>
+      ) : (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>
               {n === 4 ? (
-                <>🎲 <span style={{ color: C.green }}>{nm(show[0])} & {nm(show[1])}</span> <span style={{ color: "#9aa69e" }}>vs</span> <span style={{ color: C.green }}>{nm(show[2])} & {nm(show[3])}</span></>
+                <>{spinning ? "🎲" : manual ? "✍️" : "🎲"} <span style={{ color: C.green }}>{nm(show[0])} & {nm(show[1])}</span> <span style={{ color: "#9aa69e" }}>vs</span> <span style={{ color: C.green }}>{nm(show[2])} & {nm(show[3])}</span></>
               ) : (
-                <>🎲 Pareja fija: <span style={{ color: C.green }}>{nm(show[0])} & {nm(show[1])}</span> <span style={{ color: "#9aa69e" }}>· rotan:</span> {nm(show[2])}, {nm(show[3])}, {nm(show[4])}</>
+                <>{spinning ? "🎲" : manual ? "✍️" : "🎲"} Pareja fija: <span style={{ color: C.green }}>{nm(show[0])} & {nm(show[1])}</span> <span style={{ color: "#9aa69e" }}>· rotan:</span> {nm(show[2])}, {nm(show[3])}, {nm(show[4])}</>
               )}
             </div>
-            {!spinning && canDraw && <button onClick={start} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>volver a sortear</button>}
+            {!spinning && canDraw && (
+              <div style={{ display: "flex", gap: 12 }}>
+                <button onClick={start} style={linkBtn}>🎲 sortear</button>
+                <button onClick={() => { setPicking(true); setPicked([]); }} style={linkBtn}>✍️ cambiar</button>
+              </div>
+            )}
           </div>
           {spinning && <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginTop: 4 }}>Sorteando…</div>}
         </div>
@@ -1632,7 +1672,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     else delete hcps[pid];
     const scorerId = g.scorerId === pid && has ? null : g.scorerId;
     // si cambia la conformación del grupo, el sorteo de parejas anterior queda sin efecto
-    setGroup(gid, { playerIds, hcps, scorerId, drawnOrder: null });
+    setGroup(gid, { playerIds, hcps, scorerId, drawnOrder: null, drawnMode: null });
   };
   const setGroupHcp = (gid, pid, v) => { const g = groups.find((x) => x.id === gid); setGroup(gid, { hcps: { ...g.hcps, [pid]: v } }); };
   const setGroupScore = (gid, pid, h, v) => {
@@ -1769,6 +1809,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                         </Field>
                       )}
                     </div>
+                    {g.playerIds.length >= 4 && (
+                      <TeeDraw g={g} players={players} canDraw onDraw={(final, mode) => setGroup(g.id, { drawnOrder: final, drawnMode: mode })} />
+                    )}
                   </div>
                 )}
               </Card>
@@ -1863,7 +1906,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                     <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringGroup(g.id)}>{done ? "Editar" : "Llenar scores"}</Btn>
                   </div>
                 </div>
-                <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final) => setGroup(g.id, { drawnOrder: final })} />
+                <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final, mode) => setGroup(g.id, { drawnOrder: final, drawnMode: mode })} />
               </Card>
             );
           })}
