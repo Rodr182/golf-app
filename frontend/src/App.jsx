@@ -294,6 +294,48 @@ function computeEvent(event, course, rules) {
   return { rows, eventStart, tokenValue: rules.tokenValue, breakdown };
 }
 
+/* Ronda simple (1 o 2 jugadores por grupo): solo tarjeta, sin apuestas.
+   Calcula gross, neto (con el % de hándicap elegido) y diferencia vs par. */
+function computeSimpleRound(event, course, rules) {
+  const parTotal = course.pars.reduce((a, b) => a + b, 0);
+  const rows = [];
+  event.teams.forEach((t) => t.players.forEach((p) => {
+    const grossTotal = p.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
+    const adj = adjustedHcp(parseInt(p.hcp) || 0, rules.rulePct);
+    rows.push({
+      id: p.id, name: p.name, hcp: p.hcp, adj,
+      grossTotal, netTotal: grossTotal - adj, vsPar: grossTotal - parTotal,
+      teamTok: 0, groupTok: 0, totalTok: 0, teamMoney: 0, groupMoney: 0, totalMoney: 0, contests: [],
+    });
+  }));
+  rows.sort((a, b) => a.netTotal - b.netTotal);
+  return { simple: true, rows, parTotal, eventStart: event.teams[0]?.start || 1, tokenValue: 0, breakdown: [] };
+}
+
+function SimpleResults({ results }) {
+  const cellR = { padding: "10px 12px", textAlign: "right" };
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}><Chip tone="neutral">Ronda simple · sin apuestas · Par {results.parTotal}</Chip></div>
+      <Card style={{ overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "26px 1.5fr .8fr .8fr .8fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
+          <div>#</div><div>Jugador</div><div style={{ textAlign: "right" }}>Gross</div><div style={{ textAlign: "right" }}>Neto</div><div style={{ textAlign: "right" }}>vs Par</div>
+        </div>
+        {results.rows.map((r, i) => (
+          <div key={r.id} style={{ display: "grid", gridTemplateColumns: "26px 1.5fr .8fr .8fr .8fr", padding: "11px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+            <div style={{ fontWeight: 800, color: i === 0 ? C.gold : "#9aa69e", fontFamily: "'Fraunces'" }}>{i + 1}</div>
+            <div style={{ fontWeight: 600 }}>{r.name} <span style={{ color: "#9aa69e", fontSize: 12 }}>· hcp {r.hcp} (aj. {r.adj})</span></div>
+            <div style={{ textAlign: "right", fontWeight: 700 }}>{r.grossTotal}</div>
+            <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 16, color: C.green }}>{r.netTotal}</div>
+            <div style={{ textAlign: "right", fontWeight: 700, color: r.vsPar < 0 ? "#3fa46a" : r.vsPar > 0 ? C.red : "#9aa69e" }}>{r.vsPar > 0 ? "+" + r.vsPar : r.vsPar}</div>
+          </div>
+        ))}
+      </Card>
+      <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 10 }}>Los scores de esta ronda cuentan para tus estadísticas y tu historial de tarjetas.</div>
+    </div>
+  );
+}
+
 /* ---------------- DATOS DE EJEMPLO ---------------- */
 const EXAMPLE_COURSE = {
   id: "asia",
@@ -349,7 +391,7 @@ const groupOrder = (g) => (g.drawnOrder && g.drawnOrder.length === g.playerIds.l
 /* Money list de una comunidad: acumula por participante en todas sus rondas */
 function communityMoneyList(communityId, rounds) {
   const agg = {};
-  rounds.filter((r) => r.communityId === communityId).forEach((r) => {
+  rounds.filter((r) => r.communityId === communityId && !r.results.simple).forEach((r) => {
     r.results.rows.forEach((row) => {
       const a = agg[row.id] || (agg[row.id] = { id: row.id, name: row.name, total: 0, rounds: 0, best: -Infinity, worst: Infinity });
       a.total += row.totalMoney; a.rounds++;
@@ -362,7 +404,7 @@ function communityMoneyList(communityId, rounds) {
 /* Money list del jugador agrupada por comunidad */
 function playerMoneyByCommunity(meId, rounds) {
   const byComm = {};
-  rounds.forEach((r) => {
+  rounds.filter((r) => !r.results.simple).forEach((r) => {
     const row = r.results.rows.find((x) => x.id === meId);
     if (!row) return;
     const b = byComm[r.communityId] || (byComm[r.communityId] = { communityId: r.communityId, total: 0, rounds: 0, best: -Infinity, worst: Infinity });
@@ -742,54 +784,111 @@ function ScoreMatrix({ event, course, onChange }) {
 /* Resumen parcial del grupo: puntos por hoyo (neto) solo sobre los hoyos que
    TODOS los jugadores ya llenaron. Es informativo; el cálculo oficial (caminos,
    carry over, bye) se hace al consolidar el evento. */
-function partialGroupSummary(course, playerList, scores, rulePct) {
+function partialGroupSummary(course, playerList, scores, rulePct, start = 1) {
   const si = course.strokes;
   const nums = playerList.map((p) => ({ ...p, adj: adjustedHcp(parseInt(p.hcp) || 0, rulePct) }));
   if (!nums.length) return null;
   const base = Math.min(...nums.map((p) => p.adj));
   const ph = {}; nums.forEach((p) => (ph[p.id] = Math.min(p.adj - base, 18)));
-  const filledHoles = [];
+  const filledSet = new Set();
   for (let h = 0; h < 18; h++) {
-    if (nums.every((p) => { const v = (scores[p.id] || [])[h]; return v !== "" && v != null; })) filledHoles.push(h);
+    if (nums.every((p) => { const v = (scores[p.id] || [])[h]; return v !== "" && v != null; })) filledSet.add(h);
   }
-  const net = {}; nums.forEach((p) => (net[p.id] = si.map((s, h) => ((scores[p.id] || [])[h] ?? 0) - strokesOnHole(ph[p.id], s))));
-  const pts = {}; nums.forEach((p) => (pts[p.id] = { front: 0, back: 0, total: 0 }));
-  const addPts = (bucket, key, h) => { bucket[key].total++; if (h < 9) bucket[key].front++; else bucket[key].back++; };
-  filledHoles.forEach((h) => {
-    let min = Infinity; nums.forEach((p) => { if (net[p.id][h] < min) min = net[p.id][h]; });
-    nums.forEach((p) => { if (net[p.id][h] === min) addPts(pts, p.id, h); });
+  // golpes brutos parciales (front / back / total) por jugador
+  const gross = {};
+  nums.forEach((p) => {
+    const g = { front: 0, back: 0, total: 0 };
+    for (let h = 0; h < 18; h++) {
+      const v = (scores[p.id] || [])[h];
+      if (v !== "" && v != null) { const n = parseInt(v) || 0; g.total += n; if (h < 9) g.front += n; else g.back += n; }
+    }
+    gross[p.id] = g;
   });
+  const net = {}; nums.forEach((p) => (net[p.id] = si.map((s, h) => ((scores[p.id] || [])[h] ?? 0) - strokesOnHole(ph[p.id], s))));
+  // puntos por hoyo (1 al ganador o empatados por neto), y acumulados F/B/T
+  const ptsHole = {}; nums.forEach((p) => (ptsHole[p.id] = new Array(18).fill(0)));
+  const pts = {}; nums.forEach((p) => (pts[p.id] = { front: 0, back: 0, total: 0, bye: 0 }));
+  filledSet.forEach((h) => {
+    let min = Infinity; nums.forEach((p) => { if (net[p.id][h] < min) min = net[p.id][h]; });
+    nums.forEach((p) => { if (net[p.id][h] === min) { ptsHole[p.id][h] = 1; pts[p.id].total++; if (h < 9) pts[p.id].front++; else pts[p.id].back++; } });
+  });
+  // BYE en vivo: se recorre el orden de juego con los hoyos consecutivos ya
+  // llenos; si alguien asegura el match (ventaja > hoyos restantes), los hoyos
+  // siguientes cuentan para el Bye.
+  const order = playOrder(start);
+  const detectBye = (holePts, keys) => {
+    const run = {}; keys.forEach((k) => (run[k] = 0));
+    for (let pos = 0; pos < 18; pos++) {
+      const h = order[pos];
+      if (!filledSet.has(h)) break; // solo prefijo consecutivo en orden de juego
+      keys.forEach((k) => (run[k] += holePts[k][h]));
+      const remaining = 17 - pos;
+      const vals = keys.map((k) => run[k]).sort((a, b) => b - a);
+      if (remaining > 0 && vals[0] - (vals[1] ?? 0) > remaining) return order.slice(pos + 1);
+    }
+    return null;
+  };
+  const byeHoles = nums.length > 1 ? detectBye(ptsHole, nums.map((p) => p.id)) : null;
+  if (byeHoles) {
+    byeHoles.forEach((h) => { if (filledSet.has(h)) nums.forEach((p) => { if (ptsHole[p.id][h]) pts[p.id].bye++; }); });
+  }
   // Parejas (best ball) solo con 4 jugadores: los 2 primeros vs los 2 últimos
-  let pairs = null;
+  let pairs = null, pairByeHoles = null;
   if (nums.length === 4) {
     const prs = [[nums[0], nums[1]], [nums[2], nums[3]]];
     const pNet = prs.map((pr) => si.map((_, h) => Math.min(net[pr[0].id][h], net[pr[1].id][h])));
-    const pPts = [{ front: 0, back: 0, total: 0 }, { front: 0, back: 0, total: 0 }];
-    filledHoles.forEach((h) => {
+    const pHole = { 0: new Array(18).fill(0), 1: new Array(18).fill(0) };
+    const pPts = [{ front: 0, back: 0, total: 0, bye: 0 }, { front: 0, back: 0, total: 0, bye: 0 }];
+    filledSet.forEach((h) => {
       const m = Math.min(pNet[0][h], pNet[1][h]);
-      pNet.forEach((n, i) => { if (n[h] === m) { pPts[i].total++; if (h < 9) pPts[i].front++; else pPts[i].back++; } });
+      pNet.forEach((n, i) => { if (n[h] === m) { pHole[i][h] = 1; pPts[i].total++; if (h < 9) pPts[i].front++; else pPts[i].back++; } });
     });
+    pairByeHoles = detectBye(pHole, [0, 1]);
+    if (pairByeHoles) pairByeHoles.forEach((h) => { if (filledSet.has(h)) [0, 1].forEach((i) => { if (pHole[i][h]) pPts[i].bye++; }); });
     pairs = prs.map((pr, i) => ({ label: pr[0].name.split(" ")[0] + " & " + pr[1].name.split(" ")[0], ...pPts[i] }));
   }
-  return { holes: filledHoles.length, ph, players: nums, pts, pairs };
+  return { holes: filledSet.size, ph, players: nums, pts, gross, pairs, byeFrom: byeHoles ? byeHoles[0] + 1 : null, pairByeFrom: pairByeHoles ? pairByeHoles[0] + 1 : null };
 }
 
-function GroupLiveSummary({ course, playerList, scores, rulePct }) {
-  const s = partialGroupSummary(course, playerList, scores, rulePct);
+function GroupLiveSummary({ course, playerList, scores, rulePct, start = 1 }) {
+  const s = partialGroupSummary(course, playerList, scores, rulePct, start);
   if (!s || s.holes === 0) return null;
   const sorted = [...s.players].sort((a, b) => s.pts[b.id].total - s.pts[a.id].total);
   const cellR = { padding: "5px 8px", textAlign: "right" };
+  const showBye = !!s.byeFrom;
+  const showPairBye = !!s.pairByeFrom;
   return (
     <Card style={{ padding: 14, marginTop: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
         <div style={{ fontWeight: 700, fontSize: 15, color: C.green }}>Resumen interno del grupo</div>
         <Chip tone="neutral">{s.holes} de 18 hoyos contados</Chip>
       </div>
+
+      {/* GOLPES (tarjeta): totales parciales Front / Back / 18 */}
       <div style={{ overflowX: "auto", marginTop: 8 }}>
         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
           <thead><tr style={{ color: "#7a8780", textAlign: "right" }}>
-            <th style={{ textAlign: "left", padding: "4px 8px" }}>Individual</th>
-            <th style={cellR}>Front</th><th style={cellR}>Back</th><th style={cellR}>Total</th>
+            <th style={{ textAlign: "left", padding: "4px 8px" }}>Golpes</th>
+            <th style={cellR}>Front</th><th style={cellR}>Back</th><th style={cellR}>Total 18</th>
+          </tr></thead>
+          <tbody>
+            {s.players.map((p) => (
+              <tr key={p.id} style={{ borderTop: `1px solid ${C.line}`, textAlign: "right" }}>
+                <td style={{ textAlign: "left", padding: "5px 8px", fontWeight: 600 }}>{p.name}</td>
+                <td style={cellR}>{s.gross[p.id].front || "·"}</td>
+                <td style={cellR}>{s.gross[p.id].back || "·"}</td>
+                <td style={{ ...cellR, fontWeight: 800 }}>{s.gross[p.id].total || "·"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ overflowX: "auto", marginTop: 10 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <thead><tr style={{ color: "#7a8780", textAlign: "right" }}>
+            <th style={{ textAlign: "left", padding: "4px 8px" }}>Individual (puntos)</th>
+            <th style={cellR}>Front</th><th style={cellR}>Back</th>{showBye && <th style={cellR}>Bye</th>}<th style={cellR}>Total</th>
           </tr></thead>
           <tbody>
             {sorted.map((p, i) => (
@@ -797,29 +896,34 @@ function GroupLiveSummary({ course, playerList, scores, rulePct }) {
                 <td style={{ textAlign: "left", padding: "5px 8px", fontWeight: 600 }}>{p.name} {i === 0 && <span style={{ color: C.gold }}>★</span>}</td>
                 <td style={cellR}>{s.pts[p.id].front}</td>
                 <td style={cellR}>{s.pts[p.id].back}</td>
+                {showBye && <td style={cellR}>{s.pts[p.id].bye}</td>}
                 <td style={{ ...cellR, fontWeight: 800 }}>{s.pts[p.id].total}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {showBye && <div style={{ marginTop: 6 }}><Chip tone="gold">🔥 Bye individual activo desde el hoyo {s.byeFrom}</Chip></div>}
+
       {s.pairs && (
         <div style={{ overflowX: "auto", marginTop: 10 }}>
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
             <thead><tr style={{ color: "#7a8780", textAlign: "right" }}>
               <th style={{ textAlign: "left", padding: "4px 8px" }}>Parejas (best ball)</th>
-              <th style={cellR}>Front</th><th style={cellR}>Back</th><th style={cellR}>Total</th>
+              <th style={cellR}>Front</th><th style={cellR}>Back</th>{showPairBye && <th style={cellR}>Bye</th>}<th style={cellR}>Total</th>
             </tr></thead>
             <tbody>
               {s.pairs.map((pr, i) => (
                 <tr key={i} style={{ borderTop: `1px solid ${C.line}`, textAlign: "right" }}>
                   <td style={{ textAlign: "left", padding: "5px 8px", fontWeight: 600 }}>{pr.label}</td>
                   <td style={cellR}>{pr.front}</td><td style={cellR}>{pr.back}</td>
+                  {showPairBye && <td style={cellR}>{pr.bye}</td>}
                   <td style={{ ...cellR, fontWeight: 800 }}>{pr.total}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {showPairBye && <div style={{ marginTop: 6 }}><Chip tone="gold">🔥 Bye de parejas activo desde el hoyo {s.pairByeFrom}</Chip></div>}
         </div>
       )}
       <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>
@@ -1172,6 +1276,7 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
   const [teams, setTeams] = useState(initialEvent?.teams || [{ id: 1, start: 1, players: [], pairs: [] }]);
   const [scoringTeam, setScoringTeam] = useState(null);   // equipo abierto en la entrada de scores
   const [entryMode, setEntryMode] = useState("hole");     // "hole" | "matrix"
+  const [custom, setCustom] = useState(null);             // reglas personalizadas de esta ronda (null = las de la comunidad)
 
   const course = courses.find((c) => c.id === courseId) || courses[0];
   const community = communities.find((c) => c.id === communityId) || communities[0];
@@ -1209,12 +1314,19 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
   };
 
   const event = { courseId: course.id, communityId: community.id, date, teams };
-  const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency };
+  const rules = custom
+    ? { rulePct: +custom.rulePct || 0, tokenValue: +custom.tokenValue || 0, bet: { front: +custom.front || 0, back: +custom.back || 0, match: +custom.match || 0, bye: +custom.bye || 0 }, medal: community.medal, regla8: !!custom.regla8, currency: community.currency }
+    : { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency };
+  // Con algún grupo de 1 o 2 jugadores, la ronda es SIMPLE: solo tarjeta, sin apuestas.
+  const simpleMode = teams.some((t) => t.players.length < 3);
   const results = useMemo(() => {
-    try { return computeEvent(JSON.parse(JSON.stringify(event)), course, rules); } catch (e) { return null; }
+    try {
+      if (simpleMode) return computeSimpleRound(JSON.parse(JSON.stringify(event)), course, rules);
+      return computeEvent(JSON.parse(JSON.stringify(event)), course, rules);
+    } catch (e) { return null; }
   }, [step]); // recompute al entrar al paso 4
 
-  const canStep2 = teams.every((t) => t.players.length >= 3) && teams.length >= 1;
+  const canStep2 = teams.every((t) => t.players.length >= 1 && t.players.length <= 5) && teams.length >= 1;
   const allFilled = teams.every((t) => t.players.every((p) => p.gross.every((g) => g !== "" && g != null)));
 
   const Stepper = () => (
@@ -1246,7 +1358,32 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
             </select>
           </Field>
           <Field label="Fecha"><input style={inputStyle} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-          <div style={{ fontSize: 13, color: "#7a8780", marginTop: 4 }}>Par {course.pars.reduce((a, b) => a + b, 0)} · El hoyo de salida se elige por equipo en el siguiente paso.</div>
+
+          {/* REGLAS DE LA RONDA: por defecto las de la comunidad, personalizables */}
+          <label style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0 10px", cursor: "pointer" }}>
+            <input type="checkbox" checked={!!custom} style={{ width: 18, height: 18 }}
+              onChange={(e) => setCustom(e.target.checked ? { rulePct: community.rulePct, tokenValue: community.tokenValue, front: community.bet.front, back: community.bet.back, match: community.bet.match, bye: community.bet.bye, regla8: community.regla8 } : null)} />
+            <span style={{ fontSize: 13.5 }}><b>Personalizar reglas</b> de esta ronda (si no, se usan las de {community.name}: {community.rulePct}% hcp)</span>
+          </label>
+          {custom && (
+            <div style={{ padding: 12, background: C.cream, borderRadius: 12, marginBottom: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="% Hándicap a jugar"><input style={inputStyle} type="number" inputMode="numeric" value={custom.rulePct} onChange={(e) => setCustom({ ...custom, rulePct: e.target.value })} /></Field>
+                <Field label="Valor del token"><input style={inputStyle} type="number" inputMode="numeric" value={custom.tokenValue} onChange={(e) => setCustom({ ...custom, tokenValue: e.target.value })} /></Field>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                {[["front", "Front"], ["back", "Back"], ["match", "Match"], ["bye", "Bye"]].map(([k, l]) => (
+                  <Field key={k} label={l}><input style={inputStyle} type="number" inputMode="numeric" value={custom[k]} onChange={(e) => setCustom({ ...custom, [k]: e.target.value })} /></Field>
+                ))}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!custom.regla8} onChange={(e) => setCustom({ ...custom, regla8: e.target.checked })} style={{ width: 18, height: 18 }} />
+                <span style={{ fontSize: 13 }}><b>Regla 8</b>: en los par 3 marcados, el stroke solo empata.</span>
+              </label>
+            </div>
+          )}
+
+          <div style={{ fontSize: 13, color: "#7a8780", marginTop: 4 }}>Par {course.pars.reduce((a, b) => a + b, 0)} · El hoyo de salida se elige por grupo en el siguiente paso. Con grupos de 3 a 5 se juega Machetero; con 1 o 2 jugadores es una <b>ronda simple</b> (solo tarjeta, sin apuestas).</div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 20 }}>
             <Btn variant="ghost" onClick={onCancel}>Cancelar</Btn>
             <Btn disabled={!course || !community} onClick={() => setStep(2)}>Siguiente →</Btn>
@@ -1280,13 +1417,13 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
               {t.players.length > 0 && (
                 <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr", gap: 8, fontSize: 12, color: "#7a8780", fontWeight: 700, marginBottom: 6 }}>
-                    <div>Jugador</div><div>Hándicap</div><div>Ajustado ({community.rulePct}%)</div>
+                    <div>Jugador</div><div>Hándicap</div><div>Ajustado ({rules.rulePct}%)</div>
                   </div>
                   {t.players.map((p) => (
                     <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr", gap: 8, alignItems: "center", marginBottom: 6 }}>
                       <div style={{ fontWeight: 600 }}>{p.name}</div>
                       <input style={{ ...inputStyle, padding: "8px 10px" }} type="number" value={p.hcp} onChange={(e) => setHcp(t.id, p.id, e.target.value === "" ? "" : parseInt(e.target.value))} />
-                      <div style={{ fontWeight: 700, color: C.green }}>{p.hcp === "" || p.hcp == null ? "—" : adjustedHcp(p.hcp, community.rulePct)}</div>
+                      <div style={{ fontWeight: 700, color: C.green }}>{p.hcp === "" || p.hcp == null ? "—" : adjustedHcp(p.hcp, rules.rulePct)}</div>
                     </div>
                   ))}
                   {t.players.length === 3 && (
@@ -1332,7 +1469,8 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
               <Btn disabled={!canStep2} onClick={() => setStep(3)}>Siguiente →</Btn>
             </div>
           </div>
-          {!canStep2 && <div style={{ color: C.red, fontSize: 13, marginTop: 8, textAlign: "right" }}>Cada equipo necesita entre 3 y 5 jugadores.</div>}
+          {!canStep2 && <div style={{ color: C.red, fontSize: 13, marginTop: 8, textAlign: "right" }}>Cada grupo necesita entre 1 y 5 jugadores.</div>}
+          {canStep2 && simpleMode && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8, textAlign: "right" }}>Ronda simple: solo tarjeta y estadísticas, sin apuestas (los grupos de 3 a 5 activan el Machetero).</div>}
         </div>
       )}
 
@@ -1359,12 +1497,12 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                 {entryMode === "hole" ? (
                   <HoleByHole key={t.id} course={course} start={t.start} playerList={t.players}
                     scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))}
-                    rulePct={community.rulePct} onSet={(pid, h, v) => setGross(t.id, pid, h, v)} />
+                    rulePct={rules.rulePct} onSet={(pid, h, v) => setGross(t.id, pid, h, v)} />
                 ) : (
                   <ScoreMatrix event={{ teams: [t] }} course={course} onChange={setGross} />
                 )}
                 <GroupLiveSummary course={course} playerList={t.players}
-                  scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))} rulePct={community.rulePct} />
+                  scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))} rulePct={rules.rulePct} start={t.start} />
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10 }}>
@@ -1399,7 +1537,9 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
 
       {step === 4 && results && (
         <div>
-          <Results results={results} community={community} />
+          {results.simple
+            ? <SimpleResults results={results} />
+            : <Results results={results} community={{ ...community, tokenValue: rules.tokenValue, currency: rules.currency }} />}
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 20 }}>
             <Btn variant="ghost" onClick={() => setStep(3)}>← Editar scores</Btn>
             <Btn variant="gold" onClick={() => onSave({ ...event, results })}>Guardar ronda</Btn>
@@ -1500,6 +1640,7 @@ function Communities({ communities, me, onOpen, onCreate }) {
 
 /* ---------------- PERFIL / ESTADÍSTICAS ---------------- */
 function PlayerView({ me, rounds, communities, players, courses: coursesProp }) {
+  const [openCardIdx, setOpenCardIdx] = useState(null);
   const byComm = playerMoneyByCommunity(me.id, rounds);
   const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id));
   const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
@@ -1509,6 +1650,19 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
   const stats = playerScoreStats(me.id, rounds, courses);
   const hcpHist = playerHcpHistory(me.id, rounds);
   const maxCat = Math.max(1, ...Object.values(stats.counts));
+
+  // Tarjetas completas del jugador (18 hoyos): gross y neto por ronda
+  const myCards = rounds.map((r) => {
+    const course = courses.find((c) => c.id === r.courseId);
+    let mp = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === me.id) mp = p; }));
+    if (!mp || !course) return null;
+    const filled = mp.gross.length === 18 && mp.gross.every((g) => g !== "" && g != null);
+    if (!filled) return null;
+    const grossTotal = mp.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
+    const hcp = parseInt(mp.hcp) || 0;
+    return { grossTotal, netTotal: grossTotal - hcp };
+  }).filter(Boolean);
+  const avg = (arr) => (arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(1);
 
   return (
     <div>
@@ -1579,6 +1733,24 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
         </Card>
       )}
 
+      {/* GROSS Y NETO */}
+      {myCards.length > 0 && (
+        <>
+          <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Gross y neto</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, marginBottom: 22 }}>
+            {[["Mejor gross", Math.min(...myCards.map((c) => c.grossTotal))],
+              ["Promedio gross", avg(myCards.map((c) => c.grossTotal))],
+              ["Mejor neto", Math.min(...myCards.map((c) => c.netTotal))],
+              ["Promedio neto", avg(myCards.map((c) => c.netTotal))]].map(([l, v]) => (
+              <Card key={l} style={{ padding: 14 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>{l}</div>
+                <div style={{ fontFamily: "'Fraunces'", fontSize: 26, fontWeight: 900, color: C.green, marginTop: 2 }}>{v}</div>
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
+
       {/* MOVIMIENTO DE HÁNDICAP */}
       {hcpHist.length > 0 && (
         <>
@@ -1611,25 +1783,73 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
         const c = communities.find((x) => x.id === r.communityId);
         const myRow = r.results.rows.find((x) => x.id === me.id);
         const top = [...r.results.rows].sort((a, b) => b.totalMoney - a.totalMoney)[0];
+        const course = courses.find((x) => x.id === r.courseId);
+        let myPlayer = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === me.id) myPlayer = p; }));
+        const isOpen = openCardIdx === i;
+        const fSum = (arr, a, b) => arr.slice(a, b).reduce((s, v) => s + (parseInt(v) || 0), 0);
         return (
-          <Card key={i} style={{ padding: 14, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontWeight: 700 }}>{c?.name || "Comunidad"} · {r.date}</div>
-              <div style={{ color: "#7a8780", fontSize: 13 }}>{r.teams.length} equipos · {r.results.rows.length} jugadores</div>
+          <Card key={i} style={{ padding: 14, marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 700 }}>{c?.name || "Comunidad"} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
+                <div style={{ color: "#7a8780", fontSize: 13 }}>{course?.name || ""} · {r.results.rows.length} jugadores</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                {myRow ? (
+                  r.results.simple ? (
+                    <>
+                      <div style={{ fontSize: 12, color: "#7a8780" }}>Tu tarjeta</div>
+                      <div style={{ fontWeight: 800, color: C.green }}>{myRow.grossTotal} gross · {myRow.netTotal} neto</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 12, color: "#7a8780" }}>Tu resultado</div>
+                      <div style={{ fontWeight: 800, color: myRow.totalMoney >= 0 ? C.green : C.red }}>{money(myRow.totalMoney, c?.currency)}</div>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12, color: "#7a8780" }}>Mejor de la ronda</div>
+                    <div style={{ fontWeight: 800, color: C.gold }}>{top?.name} · {money(top?.totalMoney || 0, c?.currency)}</div>
+                  </>
+                )}
+              </div>
             </div>
-            <div style={{ textAlign: "right" }}>
-              {myRow ? (
-                <>
-                  <div style={{ fontSize: 12, color: "#7a8780" }}>Tu resultado</div>
-                  <div style={{ fontWeight: 800, color: myRow.totalMoney >= 0 ? C.green : C.red }}>{money(myRow.totalMoney, c?.currency)}</div>
-                </>
-              ) : (
-                <>
-                  <div style={{ fontSize: 12, color: "#7a8780" }}>Mejor de la ronda</div>
-                  <div style={{ fontWeight: 800, color: C.gold }}>{top?.name} · {money(top?.totalMoney || 0, c?.currency)}</div>
-                </>
-              )}
-            </div>
+            {myPlayer && course && (
+              <button onClick={() => setOpenCardIdx(isOpen ? null : i)} style={{ marginTop: 8, border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>
+                {isOpen ? "Ocultar mi tarjeta ▲" : "Ver mi tarjeta ▼"}
+              </button>
+            )}
+            {isOpen && myPlayer && course && (
+              <div style={{ overflowX: "auto", marginTop: 8, borderTop: `1px solid ${C.line}`, paddingTop: 8 }}>
+                <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 26 * 19 + 70 }}>
+                  <tbody>
+                    <tr>
+                      <td style={{ padding: "3px 8px", color: "#7a8780", fontWeight: 700, textAlign: "left" }}>Hoyo</td>
+                      {course.pars.map((_, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center", color: "#7a8780", fontWeight: 700, minWidth: 26 }}>{h + 1}</td>)}
+                      <td style={{ padding: "3px 8px", fontWeight: 700, color: "#7a8780" }}>Tot</td>
+                    </tr>
+                    <tr>
+                      <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Par</td>
+                      {course.pars.map((p, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center" }}>{p}</td>)}
+                      <td style={{ padding: "3px 8px", fontWeight: 700 }}>{course.pars.reduce((a, b) => a + b, 0)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Yo</td>
+                      {myPlayer.gross.map((g, h) => {
+                        const v = parseInt(g);
+                        const col = !v ? "#9aa69e" : v < course.pars[h] ? "#3fa46a" : v > course.pars[h] ? C.red : C.ink;
+                        return <td key={h} style={{ padding: "3px 0", textAlign: "center", fontWeight: 700, color: col }}>{g ?? "·"}</td>;
+                      })}
+                      <td style={{ padding: "3px 8px", fontWeight: 800 }}>{fSum(myPlayer.gross, 0, 18)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>
+                  Front: <b>{fSum(myPlayer.gross, 0, 9)}</b> · Back: <b>{fSum(myPlayer.gross, 9, 18)}</b> · Total: <b>{fSum(myPlayer.gross, 0, 18)}</b> · hcp del día: {myPlayer.hcp}
+                </div>
+              </div>
+            )}
           </Card>
         );
       })}
@@ -1652,6 +1872,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const [loanStep, setLoanStep] = useState(false);    // elección del jugador prestado al consolidar
   const [loanChoices, setLoanChoices] = useState({}); // {groupId: playerId}
   const [editHcps, setEditHcps] = useState(false);    // editor de hándicaps en la pantalla de anotación
+  const [swapFor, setSwapFor] = useState(null);       // grupo con el panel de reemplazo abierto
+  const [swapOut, setSwapOut] = useState("");
+  const [swapIn, setSwapIn] = useState("");
 
   const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
@@ -1910,7 +2133,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             </div>
           )}
 
-          <GroupLiveSummary course={course} playerList={playerList} scores={g.scores} rulePct={community.rulePct} />
+          <GroupLiveSummary course={course} playerList={playerList} scores={g.scores} rulePct={community.rulePct} start={g.start} />
 
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
             <Btn variant="ghost" onClick={() => setScoringGroup(null)}>← Grupos</Btn>
@@ -1955,6 +2178,45 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                   </div>
                 </div>
                 <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final, dm) => setGroup(g.id, { drawnOrder: final, drawnMode: dm })} />
+                {canDraw && (swapFor === g.id ? (
+                  <div style={{ marginTop: 10, padding: "10px 12px", background: C.cream, borderRadius: 12, border: `1.5px dashed ${C.redSoft}` }}>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 8 }}>↔ Reemplazar jugador (no llegó / cambio de último minuto)</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <Field label="Sale">
+                        <select style={{ ...inputStyle, padding: "8px 10px" }} value={swapOut} onChange={(e) => setSwapOut(e.target.value)}>
+                          <option value="">Elegir…</option>
+                          {g.playerIds.map((pid) => <option key={pid} value={pid}>{resolveName(pid, players)}</option>)}
+                        </select>
+                      </Field>
+                      <Field label="Entra">
+                        <select style={{ ...inputStyle, padding: "8px 10px" }} value={swapIn} onChange={(e) => setSwapIn(e.target.value)}>
+                          <option value="">Elegir…</option>
+                          {community.members.filter((m) => !groups.some((gr) => gr.playerIds.includes(m))).map((pid) => (
+                            <option key={pid} value={pid}>{resolveName(pid, players)}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+                    {swapOut && (g.scores[swapOut] || []).some((v) => v !== "" && v != null) && (
+                      <div style={{ fontSize: 12.5, color: C.red, fontWeight: 600, marginBottom: 8 }}>Ojo: {resolveName(swapOut, players)} ya tiene scores anotados — se borrarán con el cambio.</div>
+                    )}
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <Btn variant="ghost" onClick={() => { setSwapFor(null); setSwapOut(""); setSwapIn(""); }}>Cancelar</Btn>
+                      <Btn variant="gold" disabled={!swapOut || !swapIn} onClick={() => {
+                        const playerIds = g.playerIds.map((id) => (id === swapOut ? swapIn : id));
+                        const hcps = { ...g.hcps }; delete hcps[swapOut];
+                        const rec = players.find((p) => p.id === swapIn); hcps[swapIn] = rec && typeof rec.hcp === "number" ? rec.hcp : 0;
+                        const scores = { ...g.scores }; delete scores[swapOut];
+                        const scorerId = g.scorerId === swapOut ? swapIn : g.scorerId;
+                        setGroup(g.id, { playerIds, hcps, scores, scorerId, drawnOrder: null, drawnMode: null });
+                        if (!registered.includes(swapIn)) updateEvent({ registered: [...registered, swapIn] });
+                        setSwapFor(null); setSwapOut(""); setSwapIn("");
+                      }}>Confirmar cambio</Btn>
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={() => { setSwapFor(g.id); setSwapOut(""); setSwapIn(""); }} style={{ marginTop: 8, border: "none", background: "transparent", color: "#7a8780", fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>↔ Cambiar jugador</button>
+                ))}
               </Card>
             );
           })}
