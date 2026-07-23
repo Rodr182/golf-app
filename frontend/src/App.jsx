@@ -1651,6 +1651,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const [entryMode, setEntryMode] = useState("hole"); // "hole" = hoyo por hoyo · "matrix" = tarjeta completa
   const [loanStep, setLoanStep] = useState(false);    // elección del jugador prestado al consolidar
   const [loanChoices, setLoanChoices] = useState({}); // {groupId: playerId}
+  const [editHcps, setEditHcps] = useState(false);    // editor de hándicaps en la pantalla de anotación
 
   const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
@@ -1854,6 +1855,35 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               ))}
             </div>
           </div>
+
+          {/* HÁNDICAPS DEL DÍA: se confirman aquí, al momento de anotar */}
+          <Card style={{ padding: 12, marginBottom: 12, border: editHcps ? `1.5px solid ${C.gold}` : `1px solid ${C.line}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.green }}>Hándicaps de hoy</div>
+              <button onClick={() => setEditHcps(!editHcps)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>
+                {editHcps ? "Listo ✓" : "✏️ Corregir"}
+              </button>
+            </div>
+            {!editHcps ? (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {playerList.map((p) => (
+                  <Chip key={p.id} tone="neutral">{p.name.split(" ")[0]} · hcp {p.hcp === "" || p.hcp == null ? "—" : p.hcp} (aj. {p.hcp === "" || p.hcp == null ? "—" : adjustedHcp(parseInt(p.hcp) || 0, community.rulePct)})</Chip>
+                ))}
+              </div>
+            ) : (
+              <div style={{ marginTop: 10 }}>
+                {playerList.map((p) => (
+                  <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>
+                    <input style={{ ...inputStyle, padding: "8px 10px" }} type="number" inputMode="numeric" value={g.hcps[p.id] ?? ""}
+                      onChange={(e) => setGroupHcp(g.id, p.id, e.target.value === "" ? "" : parseInt(e.target.value))} />
+                    <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700 }}>Aj. {g.hcps[p.id] === "" || g.hcps[p.id] == null ? "—" : adjustedHcp(parseInt(g.hcps[p.id]) || 0, community.rulePct)}</div>
+                  </div>
+                ))}
+                <div style={{ fontSize: 12, color: "#7a8780" }}>Usa el hándicap vigente de cada jugador el día de la ronda ({community.rulePct}% según la regla de la comunidad). Los strokes por hoyo se recalculan al instante.</div>
+              </div>
+            )}
+          </Card>
 
           {entryMode === "hole" ? (
             <HoleByHole key={g.id} course={course} start={g.start} playerList={playerList} scores={g.scores} rulePct={community.rulePct}
