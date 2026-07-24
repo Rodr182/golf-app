@@ -140,9 +140,11 @@ function computeEvent(event, course, rules) {
   const { teams } = event;
   const si = course.strokes;
   const bet = rules.bet;
-  // Regla 8 (opcional): hoyos donde el stroke solo empata. Aplica a concursos individuales.
-  const tieOnly = rules.regla8 && course.tieOnlyHoles && course.tieOnlyHoles.length
-    ? new Set(course.tieOnlyHoles.map((h) => h - 1)) : null;
+  // Regla 8 (opcional): hoyos donde el stroke solo empata. Aplica a concursos
+  // individuales. Los hoyos los define la COMUNIDAD por cancha (regla8Holes);
+  // course.tieOnlyHoles queda como respaldo de datos antiguos.
+  const tieHoles = (rules.regla8Holes && rules.regla8Holes.length ? rules.regla8Holes : course.tieOnlyHoles) || [];
+  const tieOnly = rules.regla8 && tieHoles.length ? new Set(tieHoles.map((h) => h - 1)) : null;
   const strokeFlagFor = (idPhPairs) => {
     if (!tieOnly) return undefined;
     const flag = {};
@@ -587,7 +589,27 @@ function mergeById(localList, remoteList) {
   });
   return out;
 }
-const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergeById };
+// Comunidades: gana la versión con _rev mayor, pero SIEMPRE se unen las
+// postulaciones y los bloqueados — así una postulación no se pierde si un
+// admin edita las reglas al mismo tiempo.
+function mergeCommunities(localList, remoteList) {
+  const rIdx = {}; (remoteList || []).forEach((c) => { if (c && c.id != null) rIdx[c.id] = c; });
+  const seen = new Set();
+  const out = (localList || []).map((lc) => {
+    seen.add(lc.id);
+    const rc = rIdx[lc.id];
+    if (!rc) return lc;
+    const base = (lc._rev || 0) >= (rc._rev || 0) ? lc : rc;
+    const blocked = [...new Set([...(lc.blocked || []), ...(rc.blocked || [])])];
+    const members = new Set(base.members || []);
+    const applicants = [...new Set([...(lc.applicants || []), ...(rc.applicants || [])])]
+      .filter((id) => !members.has(id) && !blocked.includes(id));
+    return { ...base, applicants, blocked };
+  });
+  (remoteList || []).forEach((rc) => { if (rc && !seen.has(rc.id)) out.push(rc); });
+  return out;
+}
+const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergeById, gb_comm_v2: mergeCommunities };
 
 // Persistencia en Supabase: tabla "collections" (key → value jsonb).
 // Las escrituras se agrupan (debounce) y se fusionan con lo último de la nube.
@@ -1390,6 +1412,7 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
   const rules = custom
     ? { rulePct: +custom.rulePct || 0, tokenValue: +custom.tokenValue || 0, bet: { front: +custom.front || 0, back: +custom.back || 0, match: +custom.match || 0, bye: +custom.bye || 0 }, medal: community.medal, regla8: !!custom.regla8, currency: community.currency }
     : { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency };
+  rules.regla8Holes = ((community.regla8Map || {})[course?.id]) || [];
   // Con algún grupo de 1 o 2 jugadores, la ronda es SIMPLE: solo tarjeta, sin apuestas.
   const simpleMode = teams.some((t) => t.players.length < 3);
   const results = useMemo(() => {
@@ -1650,6 +1673,8 @@ function Communities({ communities, me, onOpen, onCreate }) {
 
   const mine = communities.filter((c) => c.members.includes(me.id) || c.admin === me.id);
   const others = communities.filter((c) => !mine.includes(c));
+  const applied = (c) => (c.applicants || []).includes(me.id);
+  const blocked = (c) => (c.blocked || []).includes(me.id);
 
   if (creating) {
     return (
@@ -1707,9 +1732,15 @@ function Communities({ communities, me, onOpen, onCreate }) {
           <div style={{ fontWeight: 700, fontSize: 17 }}>{c.name} {c.admin === me.id && <Chip tone="gold">Admin</Chip>}</div>
           <div style={{ color: "#7a8780", fontSize: 13, marginTop: 3 }}>{c.gameMode} · {c.rulePct}% hcp · {c.currency}{c.tokenValue} / token · {c.members.length} miembros</div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {!isMember && <Btn variant="ghost" onClick={() => onCreate({ ...c, members: [...c.members, me.id] }, true)}>Unirme</Btn>}
-          <Btn onClick={() => onOpen(c)}>Entrar</Btn>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {!isMember && blocked(c) ? (
+            <Chip tone="red">Bloqueado</Chip>
+          ) : !isMember && applied(c) ? (
+            <Chip tone="gold">Postulación enviada</Chip>
+          ) : !isMember ? (
+            <Btn variant="ghost" onClick={() => onCreate({ ...c, applicants: [...(c.applicants || []), me.id] }, true)}>Postular</Btn>
+          ) : null}
+          {isMember && <Btn onClick={() => onOpen(c)}>Entrar</Btn>}
         </div>
       </Card>
     );
@@ -2016,7 +2047,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
       };
     });
     const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
-    const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency };
+    const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, regla8Holes: ((community.regla8Map || {})[event.courseId]) || [] };
     const results = computeEvent(JSON.parse(JSON.stringify(evObj)), course, rules);
     onSaveRound({ ...evObj, results });
     updateEvent({ status: "cerrado", resultsRoundId: event.id });
@@ -2358,11 +2389,89 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 }
 
 
+/* Editor de reglas de la comunidad (solo admins): % hándicap, caminos, Medal
+   y la Regla 8 con sus hoyos POR CANCHA. */
+function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
+  const [f, setF] = useState({
+    rulePct: community.rulePct, tokenValue: community.tokenValue, currency: community.currency,
+    front: community.bet.front, back: community.bet.back, match: community.bet.match, bye: community.bet.bye,
+    medalTokens: community.medal?.tokens || 0, medalPct: community.medal?.rulePct || 100, regla8: !!community.regla8,
+  });
+  const [map, setMap] = useState(community.regla8Map || {});
+  const upd = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const toggleHole = (courseId, h) => setMap((m) => {
+    const cur = m[courseId] || [];
+    const next = cur.includes(h) ? cur.filter((x) => x !== h) : [...cur, h].sort((a, b) => a - b);
+    return { ...m, [courseId]: next };
+  });
+  return (
+    <Card style={{ padding: 22 }}>
+      <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 22, color: C.green, marginBottom: 16 }}>Reglas de {community.name}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Regla % hándicap"><input style={inputStyle} type="number" inputMode="numeric" value={f.rulePct} onChange={upd("rulePct")} /></Field>
+        <Field label="Valor del token"><input style={inputStyle} type="number" inputMode="numeric" value={f.tokenValue} onChange={upd("tokenValue")} /></Field>
+        <Field label="Moneda">
+          <select style={inputStyle} value={f.currency} onChange={upd("currency")}><option>S/.</option><option>$</option></select>
+        </Field>
+      </div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, letterSpacing: .4, textTransform: "uppercase", marginBottom: 8 }}>Caminos por apuesta</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
+        {[["front", "Front"], ["back", "Back"], ["match", "Match"], ["bye", "Bye"]].map(([k, l]) => (
+          <Field key={k} label={l}><input style={inputStyle} type="number" inputMode="numeric" value={f[k]} onChange={upd(k)} /></Field>
+        ))}
+      </div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, letterSpacing: .4, textTransform: "uppercase", marginBottom: 8 }}>Medal (opcional)</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Caminos Medal (0 = sin Medal)"><input style={inputStyle} type="number" inputMode="numeric" value={f.medalTokens} onChange={upd("medalTokens")} /></Field>
+        <Field label="% hándicap del Medal"><input style={inputStyle} type="number" inputMode="numeric" value={f.medalPct} onChange={upd("medalPct")} /></Field>
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={f.regla8} onChange={(e) => setF({ ...f, regla8: e.target.checked })} style={{ width: 18, height: 18 }} />
+        <span style={{ fontSize: 13.5 }}><b>Regla 8</b>: en los hoyos marcados abajo, el stroke solo sirve para empatar (no para ganar el hoyo).</span>
+      </label>
+      {f.regla8 && (
+        <div style={{ padding: 12, background: C.cream, borderRadius: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 10 }}>Marca en qué hoyos aplica la Regla 8, cancha por cancha (normalmente los par 3):</div>
+          {courses.map((co) => (
+            <div key={co.id} style={{ marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>{co.name}</div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {co.pars.map((par, i) => {
+                  const h = i + 1;
+                  const sel = (map[co.id] || []).includes(h);
+                  return (
+                    <button key={h} onClick={() => toggleHole(co.id, h)} title={`Hoyo ${h} · Par ${par}`} style={{
+                      border: "none", cursor: "pointer", width: 30, height: 30, borderRadius: 8, fontSize: 11.5, fontWeight: 700,
+                      background: sel ? C.gold : par === 3 ? "rgba(212,168,67,.18)" : C.creamDk,
+                      color: sel ? "#2c2003" : "#7a8780" }}>{h}</button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: "#9aa69e" }}>Los hoyos par 3 aparecen sombreados como sugerencia.</div>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+        <Btn variant="ghost" onClick={onCancel}>Cancelar</Btn>
+        <Btn onClick={() => onSave({
+          ...community,
+          rulePct: +f.rulePct || 0, tokenValue: +f.tokenValue || 0, currency: f.currency,
+          bet: { front: +f.front || 0, back: +f.back || 0, match: +f.match || 0, bye: +f.bye || 0 },
+          medal: { tokens: +f.medalTokens || 0, rulePct: +f.medalPct || 100 },
+          regla8: !!f.regla8, regla8Map: map,
+        })}>Guardar reglas</Btn>
+      </div>
+    </Card>
+  );
+}
+
 function CommunityDetail({ community, rounds, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onBack, onStartRound, initialEventId }) {
   const [tab, setTab] = useState(initialEventId ? "eventos" : "jugadores");
   const [openRound, setOpenRound] = useState(null);
   const [managingEventId, setManagingEventId] = useState(initialEventId || null);
   const [creatingEvent, setCreatingEvent] = useState(false);
+  const [editingRules, setEditingRules] = useState(false);
   const [evForm, setEvForm] = useState({ name: "", courseId: courses[0]?.id, date: new Date().toISOString().slice(0, 10) });
   const cur = community.currency;
   const commRounds = rounds.filter((r) => r.communityId === community.id);
@@ -2377,6 +2486,23 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
     const next = admins.includes(pid) ? admins.filter((x) => x !== pid) : [...admins, pid];
     onUpdateCommunity({ ...community, admins: next });
   };
+  const applicants = community.applicants || [];
+  const blocked = community.blocked || [];
+  const approve = (pid) => onUpdateCommunity({
+    ...community,
+    members: community.members.includes(pid) ? community.members : [...community.members, pid],
+    applicants: applicants.filter((x) => x !== pid),
+  });
+  const reject = (pid) => onUpdateCommunity({ ...community, applicants: applicants.filter((x) => x !== pid) });
+  const removeMember = (pid) => {
+    if (!window.confirm(`¿Sacar a ${resolveName(pid, players)} de la comunidad?`)) return;
+    onUpdateCommunity({ ...community, members: community.members.filter((x) => x !== pid), admins: (community.admins || []).filter((x) => x !== pid) });
+  };
+  const blockMember = (pid) => {
+    if (!window.confirm(`¿Bloquear a ${resolveName(pid, players)}? No podrá volver a postular hasta que lo desbloquees.`)) return;
+    onUpdateCommunity({ ...community, members: community.members.filter((x) => x !== pid), admins: (community.admins || []).filter((x) => x !== pid), applicants: applicants.filter((x) => x !== pid), blocked: [...blocked, pid] });
+  };
+  const unblock = (pid) => onUpdateCommunity({ ...community, blocked: blocked.filter((x) => x !== pid) });
 
   const Tab = ({ id, label }) => (
     <button onClick={() => { setTab(id); setOpenRound(null); setManagingEventId(null); }} style={{
@@ -2400,14 +2526,25 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
               {community.medal && community.medal.tokens > 0 && <Chip tone="gold">Medal {community.medal.tokens} ({community.medal.rulePct}%)</Chip>}
             </div>
           </div>
-          <Btn onClick={onStartRound}>Ronda rápida</Btn>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {iAmAdmin && <Btn variant="ghost" onClick={() => setEditingRules(true)}>⚙️ Reglas</Btn>}
+            <Btn onClick={onStartRound}>Ronda rápida</Btn>
+          </div>
         </div>
       </Card>
+
+      {editingRules && iAmAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <CommunityRulesEditor community={community} courses={courses}
+            onCancel={() => setEditingRules(false)}
+            onSave={(uc) => { onUpdateCommunity(uc); setEditingRules(false); }} />
+        </div>
+      )}
 
       {!userIsPro(me) && !community.pro && <AdSlot />}
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, background: C.creamDk, borderRadius: 12, padding: 4, width: "fit-content", flexWrap: "wrap" }}>
-        <Tab id="jugadores" label={`Jugadores (${community.members.length})`} />
+        <Tab id="jugadores" label={`Jugadores (${community.members.length})${iAmAdmin && applicants.length ? " · " + applicants.length + "📩" : ""}`} />
         <Tab id="moneylist" label="Money List" />
         <Tab id="eventos" label={`Eventos (${commEvents.length})`} />
         <Tab id="resultados" label={`Resultados (${commRounds.length})`} />
@@ -2415,18 +2552,37 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 
       {tab === "jugadores" && (
         <div>
-          {isOwner && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Como dueño, puedes nombrar administradores (pueden crear eventos).</div>}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 10 }}>
+          {/* POSTULANTES (solo admins) */}
+          {iAmAdmin && applicants.length > 0 && (
+            <Card style={{ padding: 16, marginBottom: 14, border: `1.5px solid ${C.gold}` }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: C.green, marginBottom: 10 }}>📩 Postulantes ({applicants.length})</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {applicants.map((id) => (
+                  <div key={id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <div style={{ fontWeight: 600 }}>{resolveName(id, players)}</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Btn variant="gold" onClick={() => approve(id)}>Aceptar</Btn>
+                      <Btn variant="danger" onClick={() => reject(id)}>Rechazar</Btn>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {isOwner && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Como dueño, puedes nombrar administradores (pueden crear eventos, editar reglas y gestionar jugadores).</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
             {community.members.map((id) => {
               const owner = community.admin === id;
               const adminFlag = (community.admins || []).includes(id);
+              const isMe = id === me.id;
               return (
                 <Card key={id} style={{ padding: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ width: 38, height: 38, borderRadius: 999, background: C.green, color: C.lime, display: "grid", placeItems: "center", fontWeight: 800, fontFamily: "'Fraunces'" }}>{resolveName(id, players).slice(0, 1)}</div>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 600, fontSize: 14.5 }}>{resolveName(id, players)}</div>
-                      <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+                      <div style={{ display: "flex", gap: 4, marginTop: 2, flexWrap: "wrap" }}>
                         {owner && <Chip tone="gold">Dueño</Chip>}
                         {!owner && adminFlag && <Chip tone="green">Admin</Chip>}
                       </div>
@@ -2437,10 +2593,31 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                       {adminFlag ? "Quitar admin" : "Hacer admin"}
                     </button>
                   )}
+                  {iAmAdmin && !owner && !isMe && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                      <button onClick={() => removeMember(id)} style={{ flex: 1, border: `1.5px solid ${C.line}`, background: "transparent", color: "#7a8780", cursor: "pointer", borderRadius: 9, padding: "6px", fontWeight: 600, fontSize: 12.5 }}>Sacar</button>
+                      <button onClick={() => blockMember(id)} style={{ flex: 1, border: `1.5px solid ${C.redSoft}`, background: "transparent", color: C.red, cursor: "pointer", borderRadius: 9, padding: "6px", fontWeight: 600, fontSize: 12.5 }}>Bloquear</button>
+                    </div>
+                  )}
                 </Card>
               );
             })}
           </div>
+
+          {/* BLOQUEADOS (solo admins) */}
+          {iAmAdmin && blocked.length > 0 && (
+            <Card style={{ padding: 16, marginTop: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.red, marginBottom: 10 }}>Bloqueados ({blocked.length})</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {blocked.map((id) => (
+                  <div key={id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontWeight: 600, color: "#7a8780" }}>{resolveName(id, players)}</div>
+                    <Btn variant="ghost" onClick={() => unblock(id)}>Desbloquear</Btn>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
       )}
 
@@ -2619,7 +2796,6 @@ function CourseEditor({ course, onCancel, onSave }) {
   const [holes, setHoles] = useState(() => Array.from({ length: 18 }, (_, i) => ({
     par: course ? course.pars[i] : 4,
     si: course ? course.strokes[i] : i + 1,
-    tie: course ? (course.tieOnlyHoles || []).includes(i + 1) : false,
   })));
   const [err, setErr] = useState("");
   const setH = (i, k, v) => setHoles(holes.map((h, j) => (j === i ? { ...h, [k]: v } : h)));
@@ -2636,7 +2812,6 @@ function CourseEditor({ course, onCancel, onSave }) {
       id: course?.id || "course" + Date.now(),
       name: name.trim(), location: loc.trim(),
       pars, strokes: siList,
-      tieOnlyHoles: holes.map((h, i) => (h.tie ? i + 1 : null)).filter((x) => x),
     });
   };
 
@@ -2671,14 +2846,9 @@ function CourseEditor({ course, onCancel, onSave }) {
                 <td style={{ ...cell, fontWeight: 700, fontSize: 12.5, textAlign: "left", padding: "6px 8px", background: C.cream }}>Stroke Index</td>
                 {holes.map((h, i) => <td key={i} style={{ ...cell, background: siValid ? "#fff" : "rgba(180,69,47,.06)" }}><input style={numInput} value={h.si} onChange={(e) => setH(i, "si", e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))} /></td>)}
               </tr>
-              <tr>
-                <td style={{ ...cell, fontWeight: 700, fontSize: 12.5, textAlign: "left", padding: "6px 8px", background: C.cream }}>Regla 8</td>
-                {holes.map((h, i) => <td key={i} style={{ ...cell, background: h.tie ? "rgba(212,168,67,.18)" : "#fff" }}><input type="checkbox" checked={h.tie} onChange={(e) => setH(i, "tie", e.target.checked)} style={{ margin: "8px 0", cursor: "pointer" }} /></td>)}
-              </tr>
             </tbody>
           </table>
         </div>
-        <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 8 }}>Regla 8: marca los hoyos (normalmente par 3) donde el stroke solo sirve para empatar. Se aplica solo si la comunidad activa la Regla 8.</div>
         {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginTop: 10 }}>{err}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16 }}>
           <Btn variant="ghost" onClick={onCancel}>Cancelar</Btn>
@@ -2714,11 +2884,6 @@ function CoursesView({ courses, setCourses, rounds, canManage }) {
               <div>
                 <div style={{ fontWeight: 700, fontSize: 17 }}>{c.name}</div>
                 <div style={{ color: "#7a8780", fontSize: 13, marginTop: 2 }}>{c.location || "Sin ubicación"} · Par {c.pars.reduce((s, p) => s + p, 0)}{usedCount(c.id) ? ` · ${usedCount(c.id)} ronda(s)` : ""}</div>
-                {canManage && c.tieOnlyHoles && c.tieOnlyHoles.length > 0 && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                    <Chip tone="gold">Regla 8: hoyos {c.tieOnlyHoles.join(", ")}</Chip>
-                  </div>
-                )}
               </div>
               {canManage && (
                 <div style={{ display: "flex", gap: 8 }}>
@@ -2817,12 +2982,13 @@ export default function App() {
     const tick = async () => {
       if (document.hidden) return;
       try {
-        const { data } = await sb.from("collections").select("key,value").in("key", ["gb_events_v1", "gb_rounds_v2", "gb_players_v2"]);
+        const { data } = await sb.from("collections").select("key,value").in("key", ["gb_events_v1", "gb_rounds_v2", "gb_players_v2", "gb_comm_v2"]);
         if (!data) return;
         const map = {}; data.forEach((r) => (map[r.key] = r.value));
         if (map.gb_events_v1) setEvents((prev) => stable(prev, mergeEvents(prev, map.gb_events_v1)));
         if (map.gb_rounds_v2) setRounds((prev) => stable(prev, mergeById(prev, map.gb_rounds_v2)));
         if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeById(prev, map.gb_players_v2)));
+        if (map.gb_comm_v2) setCommunities((prev) => stable(prev, mergeCommunities(prev, map.gb_comm_v2)));
       } catch {}
     };
     const iv = setInterval(tick, 15000);
@@ -2995,7 +3161,7 @@ export default function App() {
 
         {view === "communities" && !openCommunity && (
           <Communities communities={communities} me={me} onOpen={setOpenCommunity}
-            onCreate={(c, isJoin) => setCommunities((prev) => isJoin ? prev.map((x) => (x.id === c.id ? c : x)) : [...prev, c])} />
+            onCreate={(c, isJoin) => setCommunities((prev) => isJoin ? prev.map((x) => (x.id === c.id ? { ...c, _rev: (x._rev || 0) + 1 } : x)) : [...prev, { ...c, _rev: 1 }])} />
         )}
         {view === "communities" && openCommunity && (
           <CommunityDetail
@@ -3008,7 +3174,7 @@ export default function App() {
             setEvents={setEvents}
             courses={courses}
             initialEventId={eventJump}
-            onUpdateCommunity={(uc) => { setCommunities((prev) => prev.map((x) => (x.id === uc.id ? uc : x))); setOpenCommunity(uc); }}
+            onUpdateCommunity={(uc) => { const bumped = { ...uc, _rev: (uc._rev || 0) + 1 }; setCommunities((prev) => prev.map((x) => (x.id === bumped.id ? bumped : x))); setOpenCommunity(bumped); }}
             onSaveRound={(round) => setRounds((r) => [round, ...r])}
             onBack={() => { setOpenCommunity(null); setEventJump(null); }}
             onStartRound={() => { setRoundCommunity(openCommunity.id); setOpenCommunity(null); setView("round"); }}
