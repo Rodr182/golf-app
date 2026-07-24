@@ -2542,6 +2542,11 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 /* ---------------- MONETIZACIÓN: anuncios y suscripción ---------------- */
 const userIsPro = (me) => me && me.plan === "pro";
 
+/* Administrador de la APP (dueño de la plataforma): mantiene el catálogo de
+   canchas. En modo local, la cuenta demo hace de admin para poder probar. */
+const APP_ADMIN_EMAILS = ["horna.rodrigo@gmail.com"];
+const isAppAdmin = (me) => !!me && (CLOUD ? APP_ADMIN_EMAILS.includes((me.email || "").toLowerCase()) : me.id === "demo");
+
 function AdSlot({ label = "Espacio publicitario", height = 92 }) {
   return (
     <div style={{ border: `1.5px dashed ${C.line}`, borderRadius: 14, minHeight: height, display: "grid", placeItems: "center", color: "#9aa69e", margin: "14px 0",
@@ -2684,18 +2689,23 @@ function CourseEditor({ course, onCancel, onSave }) {
   );
 }
 
-function CoursesView({ courses, setCourses, rounds }) {
+function CoursesView({ courses, setCourses, rounds, canManage }) {
   const [editing, setEditing] = useState(null);
-  if (editing) {
+  if (editing && canManage) {
     return <CourseEditor course={editing === "new" ? null : editing} onCancel={() => setEditing(null)}
       onSave={(c) => { setCourses((prev) => (prev.some((x) => x.id === c.id) ? prev.map((x) => (x.id === c.id ? c : x)) : [...prev, c])); setEditing(null); }} />;
   }
   const usedCount = (id) => rounds.filter((r) => r.courseId === id).length;
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green }}>Canchas</div>
-        <Btn variant="gold" onClick={() => setEditing("new")}>+ Nueva cancha</Btn>
+        {canManage && <Btn variant="gold" onClick={() => setEditing("new")}>+ Nueva cancha</Btn>}
+      </div>
+      <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 14 }}>
+        {canManage
+          ? "Catálogo oficial de canchas. Solo tú (admin de la app) puedes agregarlas o corregirlas."
+          : "Catálogo oficial de canchas disponibles, mantenido por GolfBuddy. ¿Falta alguna? Avísale al administrador."}
       </div>
       <div style={{ display: "grid", gap: 10 }}>
         {courses.map((c) => (
@@ -2704,14 +2714,18 @@ function CoursesView({ courses, setCourses, rounds }) {
               <div>
                 <div style={{ fontWeight: 700, fontSize: 17 }}>{c.name}</div>
                 <div style={{ color: "#7a8780", fontSize: 13, marginTop: 2 }}>{c.location || "Sin ubicación"} · Par {c.pars.reduce((s, p) => s + p, 0)}{usedCount(c.id) ? ` · ${usedCount(c.id)} ronda(s)` : ""}</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                  {c.tieOnlyHoles && c.tieOnlyHoles.length > 0 && <Chip tone="gold">Regla 8: hoyos {c.tieOnlyHoles.join(", ")}</Chip>}
+                {canManage && c.tieOnlyHoles && c.tieOnlyHoles.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                    <Chip tone="gold">Regla 8: hoyos {c.tieOnlyHoles.join(", ")}</Chip>
+                  </div>
+                )}
+              </div>
+              {canManage && (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn variant="ghost" onClick={() => setEditing(c)}>Editar</Btn>
+                  {usedCount(c.id) === 0 && <Btn variant="danger" onClick={() => { if (window.confirm(`¿Eliminar "${c.name}"?`)) setCourses((prev) => prev.filter((x) => x.id !== c.id)); }}>Eliminar</Btn>}
                 </div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Btn variant="ghost" onClick={() => setEditing(c)}>Editar</Btn>
-                {usedCount(c.id) === 0 && <Btn variant="danger" onClick={() => { if (window.confirm(`¿Eliminar "${c.name}"?`)) setCourses((prev) => prev.filter((x) => x.id !== c.id)); }}>Eliminar</Btn>}
-              </div>
+              )}
             </div>
             <div style={{ overflowX: "auto", marginTop: 12 }}>
               <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 30 * 19 + 80 }}>
@@ -2959,7 +2973,7 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14 }}>
               {[["Jugador (yo)", "Tu perfil, comunidades y estadísticas de rondas.", "player"],
                 ["Comunidades", "Crea o únete a comunidades con sus reglas Machetero.", "communities"],
-                ["Canchas", "Gestiona campos: pares, stroke index y Regla 8.", "courses"],
+                ["Canchas", "Consulta las canchas disponibles: pares y stroke index.", "courses"],
                 ["Iniciar Ronda", "Arma equipos, ingresa scores y obtén resultados.", "round"]].map(([t, d, v]) => (
                 <Card key={v} style={{ padding: 18, cursor: "pointer" }} >
                   <div onClick={() => setView(v)}>
@@ -2977,7 +2991,7 @@ export default function App() {
 
         {view === "player" && <PlayerView me={me} rounds={rounds} communities={communities} players={players} courses={courses} />}
 
-        {view === "courses" && <CoursesView courses={courses} setCourses={setCourses} rounds={rounds} />}
+        {view === "courses" && <CoursesView courses={courses} setCourses={setCourses} rounds={rounds} canManage={isAppAdmin(me)} />}
 
         {view === "communities" && !openCommunity && (
           <Communities communities={communities} me={me} onOpen={setOpenCommunity}
