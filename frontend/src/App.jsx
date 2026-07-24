@@ -1321,25 +1321,42 @@ function PointsBreakdown({ breakdown }) {
     </div>
   );
 }
+/* "Comunidad" virtual para jugar sin comunidad: 100% de hándicap por defecto */
+const LIBRE_COMMUNITY = {
+  id: "libre", name: "Ronda libre", gameMode: "Machetero",
+  rulePct: 100, tokenValue: 1, currency: "S/.",
+  bet: { front: 2, back: 2, match: 3, bye: 1 },
+  medal: { tokens: 0, rulePct: 100 }, regla8: false,
+  admin: null, admins: [], members: [],
+};
+
 function StartRound({ courses, communities, players, me, onSave, onCancel, initialEvent }) {
   const [step, setStep] = useState(1);
   const [date, setDate] = useState(initialEvent?.date || new Date().toISOString().slice(0, 10));
   const [courseId, setCourseId] = useState(initialEvent?.courseId || courses[0]?.id);
-  const [communityId, setCommunityId] = useState(initialEvent?.communityId || communities[0]?.id);
+  // Si no perteneces a ninguna comunidad, la ronda libre es la opción por defecto
+  const memberAnywhere = communities.some((c) => c.members.includes(me.id) || c.admin === me.id);
+  const [communityId, setCommunityId] = useState(initialEvent?.communityId || (memberAnywhere ? communities[0]?.id : "libre"));
+  const [guests, setGuests] = useState([]);      // invitados sin cuenta (solo ronda libre)
+  const [guestName, setGuestName] = useState("");
   const [teams, setTeams] = useState(initialEvent?.teams || [{ id: 1, start: 1, players: [], pairs: [] }]);
   const [scoringTeam, setScoringTeam] = useState(null);   // equipo abierto en la entrada de scores
   const [entryMode, setEntryMode] = useState("hole");     // "hole" | "matrix"
   const [custom, setCustom] = useState(null);             // reglas personalizadas de esta ronda (null = las de la comunidad)
 
   const course = courses.find((c) => c.id === courseId) || courses[0];
-  const community = communities.find((c) => c.id === communityId) || communities[0];
+  const community = communityId === "libre" ? LIBRE_COMMUNITY : (communities.find((c) => c.id === communityId) || communities[0] || LIBRE_COMMUNITY);
 
-  // pool de miembros = miembros de la comunidad (con nombre real) + el usuario si no está
+  // pool: miembros de la comunidad; en ronda libre, usuarios con cuenta + invitados
   const memberPool = useMemo(() => {
+    if (community.id === "libre") {
+      const ids = [me.id, ...players.filter((p) => p.email && p.id !== me.id).map((p) => p.id)];
+      return [...ids.map((id) => ({ id, name: resolveName(id, players) })), ...guests];
+    }
     const ids = [...community.members];
     if (!ids.includes(me.id)) ids.unshift(me.id);
     return ids.map((id) => ({ id, name: resolveName(id, players) }));
-  }, [community, players, me]);
+  }, [community, players, me, guests]);
 
   const addTeam = () => setTeams([...teams, { id: teams.length + 1, start: 1, players: [], pairs: [] }]);
   const setTeam = (id, patch) => setTeams(teams.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -1407,9 +1424,15 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
           </Field>
           <Field label="Comunidad">
             <select style={inputStyle} value={communityId} onChange={(e) => setCommunityId(e.target.value)}>
+              <option value="libre">🕊️ Ronda libre — sin comunidad (100% hcp)</option>
               {communities.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.rulePct}% · {c.currency}{c.tokenValue}/token)</option>)}
             </select>
           </Field>
+          {communityId === "libre" && (
+            <div style={{ fontSize: 12.5, color: "#7a8780", margin: "-6px 0 12px" }}>
+              Juegas por fuera de las comunidades: hándicap al 100% (personalizable abajo), y en el siguiente paso puedes agregar invitados que no tienen cuenta.
+            </div>
+          )}
           <Field label="Fecha"><input style={inputStyle} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
 
           {/* REGLAS DE LA RONDA: por defecto las de la comunidad, personalizables */}
@@ -1446,6 +1469,18 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
 
       {step === 2 && (
         <div>
+          {community.id === "libre" && (
+            <Card style={{ padding: 14, marginBottom: 12, background: C.cream }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, textTransform: "uppercase", marginBottom: 8 }}>Agregar invitado (sin cuenta)</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={{ ...inputStyle, flex: 1 }} placeholder="Nombre del invitado" value={guestName}
+                  onChange={(e) => setGuestName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && guestName.trim()) { setGuests([...guests, { id: "guest" + Date.now(), name: guestName.trim() }]); setGuestName(""); } }} />
+                <Btn variant="ghost" disabled={!guestName.trim()} onClick={() => { setGuests([...guests, { id: "guest" + Date.now(), name: guestName.trim() }]); setGuestName(""); }}>+ Agregar</Btn>
+              </div>
+              {guests.length > 0 && <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 8 }}>Invitados: {guests.map((g) => g.name).join(", ")} — tócalos abajo para sumarlos a un grupo.</div>}
+            </Card>
+          )}
           {teams.map((t) => (
             <Card key={t.id} style={{ padding: 18, marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -1697,7 +1732,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
   const byComm = playerMoneyByCommunity(me.id, rounds);
   const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id));
   const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
-  const cName = (id) => communities.find((c) => c.id === id)?.name || "Comunidad";
+  const cName = (id) => communities.find((c) => c.id === id)?.name || (id === "libre" ? "Ronda libre" : "Comunidad");
   const cCur = (id) => communities.find((c) => c.id === id)?.currency || "S/.";
   const courses = coursesProp || [];
   const stats = playerScoreStats(me.id, rounds, courses);
@@ -1844,7 +1879,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
           <Card key={i} style={{ padding: 14, marginBottom: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div>
-                <div style={{ fontWeight: 700 }}>{c?.name || "Comunidad"} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
+                <div style={{ fontWeight: 700 }}>{c?.name || (r.communityId === "libre" ? "🕊️ Ronda libre" : "Comunidad")} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
                 <div style={{ color: "#7a8780", fontSize: 13 }}>{course?.name || ""} · {r.results.rows.length} jugadores</div>
               </div>
               <div style={{ textAlign: "right" }}>
