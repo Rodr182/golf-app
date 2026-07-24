@@ -541,8 +541,53 @@ const localStore = {
   async set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
+/* ---- FUSIÓN DE DATOS COMPARTIDOS ----
+   Varios celulares escriben a la vez (un anotador por grupo). Antes de subir,
+   se lee lo último de la nube y se COMBINA en vez de sobrescribir:
+   - scores: hoyo por hoyo, un valor anotado nunca se pisa con uno vacío
+   - listas (jugadores, rondas): unión por id
+   Así el anotador del grupo 1 no borra lo del grupo 3. */
+function mergeEventPair(pref, other) {
+  const merged = { ...other, ...pref };
+  const oGroups = {}; (other.groups || []).forEach((g) => (oGroups[g.id] = g));
+  merged.groups = (pref.groups || []).map((g) => {
+    const og = oGroups[g.id];
+    if (!og) return g;
+    const scores = { ...(og.scores || {}), ...(g.scores || {}) };
+    Object.keys(og.scores || {}).forEach((pid) => {
+      const mine = (g.scores || {})[pid]; const theirs = og.scores[pid];
+      if (mine && theirs) scores[pid] = mine.map((v, h) => ((v === "" || v == null) ? (theirs[h] ?? "") : v));
+    });
+    return { ...g, scores, drawnOrder: g.drawnOrder || og.drawnOrder || null, drawnMode: g.drawnMode || og.drawnMode || null };
+  });
+  return merged;
+}
+function mergeEvents(localList, remoteList) {
+  const rIdx = {}; (remoteList || []).forEach((e) => { if (e && e.id != null) rIdx[e.id] = e; });
+  const seen = new Set();
+  const out = (localList || []).map((le) => {
+    seen.add(le.id);
+    const re = rIdx[le.id];
+    if (!re) return le;
+    return (le._rev || 0) >= (re._rev || 0) ? mergeEventPair(le, re) : mergeEventPair(re, le);
+  });
+  (remoteList || []).forEach((re) => { if (re && !seen.has(re.id)) out.push(re); });
+  return out;
+}
+function mergeById(localList, remoteList) {
+  const localIds = new Set((localList || []).filter((x) => x && x.id != null).map((x) => x.id));
+  const localJson = new Set((localList || []).filter((x) => x && x.id == null).map((x) => JSON.stringify(x)));
+  const out = [...(localList || [])];
+  (remoteList || []).forEach((rx) => {
+    if (!rx) return;
+    if (rx.id != null ? !localIds.has(rx.id) : !localJson.has(JSON.stringify(rx))) out.push(rx);
+  });
+  return out;
+}
+const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergeById };
+
 // Persistencia en Supabase: tabla "collections" (key → value jsonb).
-// Las escrituras se agrupan (debounce) para no mandar una petición por tecla.
+// Las escrituras se agrupan (debounce) y se fusionan con lo último de la nube.
 const cloudTimers = {};
 const cloudStore = {
   async get(k, def) {
@@ -555,7 +600,15 @@ const cloudStore = {
   async set(k, v) {
     clearTimeout(cloudTimers[k]);
     cloudTimers[k] = setTimeout(async () => {
-      try { await sb.from("collections").upsert({ key: k, value: v, updated_at: new Date().toISOString() }); } catch {}
+      try {
+        let out = v;
+        const merger = CLOUD_MERGERS[k];
+        if (merger) {
+          const { data } = await sb.from("collections").select("value").eq("key", k).maybeSingle();
+          if (data && data.value) out = merger(v, data.value);
+        }
+        await sb.from("collections").upsert({ key: k, value: out, updated_at: new Date().toISOString() });
+      } catch {}
     }, 600);
   },
 };
@@ -1863,7 +1916,8 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
 function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onClose, mode = "admin" }) {
   const course = courses.find((c) => c.id === event.courseId) || courses[0];
   const admin = isAdmin(community, me.id);
-  const updateEvent = (patch) => setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, ...patch } : e)));
+  // _rev crece con cada cambio: en la fusión entre celulares gana la versión más nueva
+  const updateEvent = (patch) => setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, ...patch, _rev: (e._rev || 0) + 1 } : e)));
   const STATUS = { inscripcion: "Inscripción abierta", grupos: "Armando grupos", jugando: "En juego", cerrado: "Cerrado" };
   const registered = event.registered || [];
   const groups = event.groups || [];
@@ -2702,6 +2756,27 @@ export default function App() {
     })();
   }, []);
 
+  // SINCRONIZACIÓN EN VIVO (modo nube): cada 15s se traen los datos compartidos
+  // y se fusionan con lo local — así cada anotador ve el avance de los demás
+  // grupos sin pisar lo suyo.
+  useEffect(() => {
+    if (!CLOUD || !me) return;
+    const stable = (prev, next) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+    const tick = async () => {
+      if (document.hidden) return;
+      try {
+        const { data } = await sb.from("collections").select("key,value").in("key", ["gb_events_v1", "gb_rounds_v2", "gb_players_v2"]);
+        if (!data) return;
+        const map = {}; data.forEach((r) => (map[r.key] = r.value));
+        if (map.gb_events_v1) setEvents((prev) => stable(prev, mergeEvents(prev, map.gb_events_v1)));
+        if (map.gb_rounds_v2) setRounds((prev) => stable(prev, mergeById(prev, map.gb_rounds_v2)));
+        if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeById(prev, map.gb_players_v2)));
+      } catch {}
+    };
+    const iv = setInterval(tick, 15000);
+    return () => clearInterval(iv);
+  }, [me]);
+
   // Persistencia: en modo nube solo se escribe con sesión iniciada (me).
   const canWrite = ready && (!CLOUD || !!me);
   useEffect(() => { if (canWrite) store.set("gb_players_v2", players); }, [players, canWrite]);
@@ -2937,7 +3012,7 @@ export default function App() {
             me={me}
             initialEvent={roundCommunity ? { communityId: roundCommunity } : null}
             onCancel={() => { setRoundCommunity(null); setQuickRound(false); setView("home"); }}
-            onSave={(ev) => { setRounds((r) => [ev, ...r]); setRoundCommunity(null); setQuickRound(false); setView("player"); }}
+            onSave={(ev) => { setRounds((r) => [{ id: "r" + Date.now(), ...ev }, ...r]); setRoundCommunity(null); setQuickRound(false); setView("player"); }}
           />
         )}
       </div>
