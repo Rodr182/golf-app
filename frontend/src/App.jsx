@@ -398,6 +398,7 @@ function communityMoneyList(communityId, rounds) {
   const agg = {};
   rounds.filter((r) => r.communityId === communityId && !r.results.simple).forEach((r) => {
     r.results.rows.forEach((row) => {
+      if (row.guest) return; // invitados no cuentan para la money list acumulada
       const a = agg[row.id] || (agg[row.id] = { id: row.id, name: row.name, total: 0, rounds: 0, best: -Infinity, worst: Infinity });
       a.total += row.totalMoney; a.rounds++;
       a.best = Math.max(a.best, row.totalMoney); a.worst = Math.min(a.worst, row.totalMoney);
@@ -411,7 +412,7 @@ function playerMoneyByCommunity(meId, rounds) {
   const byComm = {};
   rounds.filter((r) => !r.results.simple).forEach((r) => {
     const row = r.results.rows.find((x) => x.id === meId);
-    if (!row) return;
+    if (!row || row.guest) return;
     const b = byComm[r.communityId] || (byComm[r.communityId] = { communityId: r.communityId, total: 0, rounds: 0, best: -Infinity, worst: Infinity });
     b.total += row.totalMoney; b.rounds++;
     b.best = Math.max(b.best, row.totalMoney); b.worst = Math.min(b.worst, row.totalMoney);
@@ -1207,7 +1208,7 @@ function Results({ results, community }) {
           <div key={r.id} style={{ display: "grid", gridTemplateColumns: "26px 1.4fr .8fr .9fr .9fr 1fr", padding: "11px 14px", alignItems: "center",
             borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
             <div style={{ fontWeight: 800, color: i === 0 ? C.gold : "#9aa69e", fontFamily: "'Fraunces'" }}>{i + 1}</div>
-            <div style={{ fontWeight: 600 }}>{r.name} <span style={{ color: "#9aa69e", fontSize: 12 }}>· hcp {r.adj}</span></div>
+            <div style={{ fontWeight: 600 }}>{r.name} {r.guest && <Chip tone="gold">Invitado</Chip>} <span style={{ color: "#9aa69e", fontSize: 12 }}>· hcp {r.adj}</span></div>
             <div style={{ textAlign: "right", color: r.teamMoney >= 0 ? C.green : C.red, fontSize: 13 }}>{money(r.teamMoney, cur)}</div>
             <div style={{ textAlign: "right", color: r.groupMoney >= 0 ? C.green : C.red, fontSize: 13 }}>{money(r.groupMoney, cur)}</div>
             <div style={{ textAlign: "right", fontWeight: 600, fontSize: 13 }}>{fmtTokSigned(r.totalTok)}</div>
@@ -1998,8 +1999,19 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const [swapFor, setSwapFor] = useState(null);       // grupo con el panel de reemplazo abierto
   const [swapOut, setSwapOut] = useState("");
   const [swapIn, setSwapIn] = useState("");
+  const [guestName, setGuestName] = useState("");     // invitado a agregar (no es de la comunidad)
 
+  const eventGuests = event.guests || [];
+  const guestIdSet = new Set(eventGuests.map((g) => g.id));
   const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
+  // Agrega un invitado: entra al evento (inscrito) pero se marca como invitado
+  // para NO contar en la money list acumulada (solo en las cuentas del día).
+  const addGuest = () => {
+    const name = guestName.trim(); if (!name) return;
+    const id = "eguest" + Date.now();
+    updateEvent({ guests: [...eventGuests, { id, name, guest: true }], registered: [...registered, id] });
+    setGuestName("");
+  };
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
 
   // ---- inscripción ----
@@ -2049,7 +2061,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
     const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, regla8Holes: ((community.regla8Map || {})[event.courseId]) || [] };
     const results = computeEvent(JSON.parse(JSON.stringify(evObj)), course, rules);
-    onSaveRound({ ...evObj, results });
+    // Marca a los invitados: juegan en las cuentas del día pero no cuentan
+    // para la money list acumulada de la comunidad.
+    results.rows.forEach((r) => { if (guestIdSet.has(r.id)) r.guest = true; });
+    onSaveRound({ ...evObj, guests: eventGuests, results });
     updateEvent({ status: "cerrado", resultsRoundId: event.id });
   };
 
@@ -2111,6 +2126,16 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         {!admin && <Card style={{ padding: 18, color: "#7a8780" }}>El administrador está armando los grupos.</Card>}
         {admin && (
           <>
+            <Card style={{ padding: 14, marginBottom: 12, background: C.cream }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, textTransform: "uppercase", marginBottom: 8 }}>Agregar invitado (no es de la comunidad)</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={{ ...inputStyle, flex: 1 }} placeholder="Nombre del invitado" value={guestName}
+                  onChange={(e) => setGuestName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addGuest(); }} />
+                <Btn variant="ghost" disabled={!guestName.trim()} onClick={addGuest}>+ Agregar</Btn>
+              </div>
+              <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>El invitado juega y entra en las cuentas del día, pero no cuenta para la money list acumulada de la comunidad.</div>
+              {eventGuests.length > 0 && <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>Invitados: {eventGuests.map((g) => g.name).join(", ")} — asígnalos a un grupo abajo.</div>}
+            </Card>
             {unassigned.length > 0 && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Sin asignar: {unassigned.map((id) => resolveName(id, players)).join(", ")}</div>}
             {groups.map((g) => (
               <Card key={g.id} style={{ padding: 16, marginBottom: 12 }}>
@@ -2126,7 +2151,8 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                   {registered.map((id) => {
                     const sel = g.playerIds.includes(id);
                     const taken = !sel && groupPlayerIds(g.id).includes(id);
-                    return <button key={id} disabled={taken} onClick={() => toggleGroupPlayer(g.id, id)} style={{ border: `1.5px solid ${sel ? C.green : C.line}`, cursor: taken ? "not-allowed" : "pointer", borderRadius: 999, padding: "6px 13px", fontWeight: 600, fontSize: 13, background: sel ? C.green : "#fff", color: sel ? C.cream : taken ? "#c2c9c0" : C.ink, textDecoration: taken ? "line-through" : "none", opacity: taken ? .6 : 1 }}>{resolveName(id, players)}</button>;
+                    const isGuest = guestIdSet.has(id);
+                    return <button key={id} disabled={taken} onClick={() => toggleGroupPlayer(g.id, id)} style={{ border: `1.5px solid ${sel ? C.green : isGuest ? C.gold : C.line}`, cursor: taken ? "not-allowed" : "pointer", borderRadius: 999, padding: "6px 13px", fontWeight: 600, fontSize: 13, background: sel ? C.green : "#fff", color: sel ? C.cream : taken ? "#c2c9c0" : C.ink, textDecoration: taken ? "line-through" : "none", opacity: taken ? .6 : 1 }}>{isGuest ? "🎟️ " : ""}{resolveName(id, players)}</button>;
                   })}
                 </div>
                 {g.playerIds.length > 0 && (
@@ -2643,7 +2669,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 
       {tab === "eventos" && (
         managingEvent ? (
-          <EventManager event={managingEvent} community={community} courses={courses} players={players} me={me} setEvents={setEvents} onSaveRound={onSaveRound} onClose={() => setManagingEventId(null)} />
+          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} onSaveRound={onSaveRound} onClose={() => setManagingEventId(null)} />
         ) : creatingEvent ? (
           <Card style={{ padding: 22, maxWidth: 520 }}>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 20, color: C.green, marginBottom: 14 }}>Nuevo evento</div>
@@ -3186,7 +3212,7 @@ export default function App() {
           const comm = ev && communities.find((c) => c.id === ev.communityId);
           if (!ev || !comm) return null;
           return (
-            <EventManager mode="play" event={ev} community={comm} courses={courses} players={players} me={me}
+            <EventManager mode="play" event={ev} community={comm} courses={courses} players={[...players, ...(ev.guests || [])]} me={me}
               setEvents={setEvents} onSaveRound={(round) => setRounds((r) => [round, ...r])} onClose={() => setPlayEventId(null)} />
           );
         })()}
