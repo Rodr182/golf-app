@@ -227,14 +227,17 @@ function computeEvent(event, course, rules) {
   const votes = teams.reduce((s, t) => s + (t.start === 1 ? 1 : -1), 0);
   const eventStart = votes >= 0 ? 1 : 10;
 
-  // Group Individual
-  const giNets = allIds.map((id) => ({ key: "" + id, net: gnet[id], weight: 1 }));
-  const gi = resolveContest(giNets, eventStart, bet, strokeFlagFor(allIds.map((id) => ({ key: "" + id, ph: gph[id] }))));
-  allIds.forEach((id) => {
-    money[id].group += gi.perContestant["" + id].total;
-    detail[id].contests.push({ name: "Individual general", scope: "evento", ...gi.perContestant["" + id], meta: gi.meta });
-  });
-  mkBreakdown("evento", "Individual general", eventStart, gi, allIds.map((id) => ({ key: "" + id, label: playerName[id] })));
+  // Individual general: solo cuando hay MÁS de un grupo. Con un único grupo
+  // sería idéntico al Individual interno y se duplicaría la apuesta.
+  if (teams.length > 1) {
+    const giNets = allIds.map((id) => ({ key: "" + id, net: gnet[id], weight: 1 }));
+    const gi = resolveContest(giNets, eventStart, bet, strokeFlagFor(allIds.map((id) => ({ key: "" + id, ph: gph[id] }))));
+    allIds.forEach((id) => {
+      money[id].group += gi.perContestant["" + id].total;
+      detail[id].contests.push({ name: "Individual general", scope: "evento", ...gi.perContestant["" + id], meta: gi.meta });
+    });
+    mkBreakdown("evento", "Individual general", eventStart, gi, allIds.map((id) => ({ key: "" + id, label: playerName[id] })));
+  }
 
   // Teams vs Teams. Para 3 jug se presta un jugador (team.loanPlayerId) y para 5 se elimina uno (team.dropPlayerId).
   if (teams.length > 1) {
