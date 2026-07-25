@@ -17,11 +17,16 @@ const CLOUD = !!sb;
 const rnd = (x) => Math.sign(x) * Math.round(Math.abs(x));
 const adjustedHcp = (hcp, rulePct) => rnd(hcp * (rulePct / 100));
 const strokesOnHole = (ph, si) => (ph < si ? 0 : 1 + Math.floor((ph - si) / 18));
-const netScores = (gross, ph, si) => { const h = Math.min(ph, 18); return gross.map((g, i) => g - strokesOnHole(h, si[i])); };
+/* Hándicap de juego efectivo. Por defecto se limita a 18 → como máximo 1 stroke
+   por hoyo (regla clásica del Machetero). Si la comunidad/ronda activa
+   multiStroke, los gaps mayores a 18 reparten 2 o más strokes en los hoyos de
+   menor stroke index. */
+const effPh = (ph, multiStroke) => (multiStroke ? ph : Math.min(ph, 18));
+const netScores = (gross, ph, si, multiStroke) => { const h = effPh(ph, multiStroke); return gross.map((g, i) => g - strokesOnHole(h, si[i])); };
 const playOrder = (start) => Array.from({ length: 18 }, (_, i) => (start - 1 + i) % 18);
 const sumRange = (a, i, j) => a.slice(i, j).reduce((s, x) => s + x, 0);
 
-// opts opcional: { tieOnly: Set(holeIdx 0-based), strokeFlag: {key:[18]bool} }
+// opts opcional: { tieOnly: Set(holeIdx 0-based), strokeFlag: {key:[18]nro de strokes} }
 // Regla 8: en los hoyos tie-only, el neto de quien recibe stroke no puede bajar del
 // mejor neto de quien NO recibe stroke (el stroke solo sirve para empatar, no para ganar).
 function pointsPerHole(nets, opts) {
@@ -32,16 +37,17 @@ function pointsPerHole(nets, opts) {
   for (let h = 0; h < 18; h++) {
     const eff = {};
     if (tieOnly && tieOnly.has(h)) {
-      // El hoyo se decide por GROSS; el stroke solo permite EMPATAR (no ganar).
-      // gross = net + 1 si recibió stroke (en estos par 3 hay a lo más 1 stroke).
+      // El hoyo se decide por GROSS; los strokes solo permiten EMPATAR (no ganar).
+      // gross = net + los strokes recibidos en el hoyo (pueden ser más de uno).
+      const strokesAt = (k) => ((strokeFlag[k] && strokeFlag[k][h]) || 0);
       const gross = {};
-      nets.forEach((n) => { gross[n.key] = n.net[h] + ((strokeFlag[n.key] && strokeFlag[n.key][h]) ? 1 : 0); });
+      nets.forEach((n) => { gross[n.key] = n.net[h] + strokesAt(n.key); });
       let bestGross = Infinity;
       nets.forEach((n) => { if (gross[n.key] < bestGross) bestGross = gross[n.key]; });
       nets.forEach((n) => {
-        const got = strokeFlag[n.key] && strokeFlag[n.key][h];
-        if (gross[n.key] === bestGross) pts[n.key][h] = 1;          // gana o empata por gross
-        else if (got && gross[n.key] - 1 <= bestGross) pts[n.key][h] = 1; // el stroke alcanza solo para empatar
+        const got = strokesAt(n.key);
+        if (gross[n.key] === bestGross) pts[n.key][h] = 1;            // gana o empata por gross
+        else if (got && gross[n.key] - got <= bestGross) pts[n.key][h] = 1; // los strokes alcanzan solo para empatar
       });
       continue;
     } else {
@@ -145,10 +151,11 @@ function computeEvent(event, course, rules) {
   // course.tieOnlyHoles queda como respaldo de datos antiguos.
   const tieHoles = (rules.regla8Holes && rules.regla8Holes.length ? rules.regla8Holes : course.tieOnlyHoles) || [];
   const tieOnly = rules.regla8 && tieHoles.length ? new Set(tieHoles.map((h) => h - 1)) : null;
+  const multiStroke = !!rules.multiStroke;
   const strokeFlagFor = (idPhPairs) => {
     if (!tieOnly) return undefined;
     const flag = {};
-    idPhPairs.forEach(({ key, ph }) => { flag[key] = si.map((s) => strokesOnHole(Math.min(ph, 18), s) > 0); });
+    idPhPairs.forEach(({ key, ph }) => { flag[key] = si.map((s) => strokesOnHole(effPh(ph, multiStroke), s)); });
     return { tieOnly, strokeFlag: flag };
   };
   // adjusted handicaps
@@ -180,7 +187,7 @@ function computeEvent(event, course, rules) {
   teams.forEach((t) => {
     const base = Math.min(...t.players.map((p) => adj[p.id]));
     const ph = {}; t.players.forEach((p) => (ph[p.id] = adj[p.id] - base));
-    const net = {}; t.players.forEach((p) => (net[p.id] = netScores(p.gross, ph[p.id], si)));
+    const net = {}; t.players.forEach((p) => (net[p.id] = netScores(p.gross, ph[p.id], si, multiStroke)));
     t._teamBase = base; t._ph = ph; t._net = net;
 
     // Team Individual
@@ -225,7 +232,7 @@ function computeEvent(event, course, rules) {
   /* ----- CONCURSOS POR EVENTO ----- */
   const eventBase = Math.min(...allIds.map((id) => adj[id]));
   const gph = {}; allIds.forEach((id) => (gph[id] = adj[id] - eventBase));
-  const gnet = {}; teams.forEach((t) => t.players.forEach((p) => (gnet[p.id] = netScores(p.gross, gph[p.id], si))));
+  const gnet = {}; teams.forEach((t) => t.players.forEach((p) => (gnet[p.id] = netScores(p.gross, gph[p.id], si, multiStroke))));
   const votes = teams.reduce((s, t) => s + (t.start === 1 ? 1 : -1), 0);
   const eventStart = votes >= 0 ? 1 : 10;
 
@@ -863,12 +870,12 @@ function ScoreMatrix({ event, course, onChange }) {
 /* Resumen parcial del grupo: puntos por hoyo (neto) solo sobre los hoyos que
    TODOS los jugadores ya llenaron. Es informativo; el cálculo oficial (caminos,
    carry over, bye) se hace al consolidar el evento. */
-function partialGroupSummary(course, playerList, scores, rulePct, start = 1) {
+function partialGroupSummary(course, playerList, scores, rulePct, start = 1, multiStroke = false) {
   const si = course.strokes;
   const nums = playerList.map((p) => ({ ...p, adj: adjustedHcp(parseInt(p.hcp) || 0, rulePct) }));
   if (!nums.length) return null;
   const base = Math.min(...nums.map((p) => p.adj));
-  const ph = {}; nums.forEach((p) => (ph[p.id] = Math.min(p.adj - base, 18)));
+  const ph = {}; nums.forEach((p) => (ph[p.id] = effPh(p.adj - base, multiStroke)));
   const filledSet = new Set();
   for (let h = 0; h < 18; h++) {
     if (nums.every((p) => { const v = (scores[p.id] || [])[h]; return v !== "" && v != null; })) filledSet.add(h);
@@ -929,8 +936,8 @@ function partialGroupSummary(course, playerList, scores, rulePct, start = 1) {
   return { holes: filledSet.size, ph, players: nums, pts, gross, pairs, byeFrom: byeHoles ? byeHoles[0] + 1 : null, pairByeFrom: pairByeHoles ? pairByeHoles[0] + 1 : null };
 }
 
-function GroupLiveSummary({ course, playerList, scores, rulePct, start = 1 }) {
-  const s = partialGroupSummary(course, playerList, scores, rulePct, start);
+function GroupLiveSummary({ course, playerList, scores, rulePct, start = 1, multiStroke = false }) {
+  const s = partialGroupSummary(course, playerList, scores, rulePct, start, multiStroke);
   if (!s || s.holes === 0) return null;
   const sorted = [...s.players].sort((a, b) => s.pts[b.id].total - s.pts[a.id].total);
   const cellR = { padding: "5px 8px", textAlign: "right" };
@@ -1103,7 +1110,7 @@ function TeeDraw({ g, players, onDraw, canDraw }) {
 }
 
 /* Entrada de scores hoyo por hoyo, en el orden de salida del grupo. */
-function HoleByHole({ course, start, playerList, scores, rulePct, onSet }) {
+function HoleByHole({ course, start, playerList, scores, rulePct, onSet, multiStroke = false }) {
   const order = playOrder(start);
   const isFilled = (pid, h) => { const v = (scores[pid] || [])[h]; return v !== "" && v != null; };
   const holeDone = (h) => playerList.every((p) => isFilled(p.id, h));
@@ -1115,7 +1122,7 @@ function HoleByHole({ course, start, playerList, scores, rulePct, onSet }) {
   // strokes que recibe cada jugador en este hoyo (para mostrar los puntos)
   const adj = {}; playerList.forEach((p) => (adj[p.id] = adjustedHcp(parseInt(p.hcp) || 0, rulePct)));
   const base = Math.min(...playerList.map((p) => adj[p.id]));
-  const strokesHere = (pid) => strokesOnHole(Math.min(adj[pid] - base, 18), course.strokes[h]);
+  const strokesHere = (pid) => strokesOnHole(effPh(adj[pid] - base, multiStroke), course.strokes[h]);
 
   const setVal = (pid, v) => onSet(pid, h, v);
   const bump = (pid, d) => {
@@ -1411,8 +1418,8 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
 
   const event = { courseId: course.id, communityId: community.id, date, teams };
   const rules = custom
-    ? { rulePct: +custom.rulePct || 0, tokenValue: +custom.tokenValue || 0, bet: { front: +custom.front || 0, back: +custom.back || 0, match: +custom.match || 0, bye: +custom.bye || 0 }, medal: community.medal, regla8: !!custom.regla8, currency: community.currency }
-    : { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency };
+    ? { rulePct: +custom.rulePct || 0, tokenValue: +custom.tokenValue || 0, bet: { front: +custom.front || 0, back: +custom.back || 0, match: +custom.match || 0, bye: +custom.bye || 0 }, medal: community.medal, regla8: !!custom.regla8, currency: community.currency, multiStroke: !!custom.multiStroke }
+    : { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, multiStroke: !!community.multiStroke };
   rules.regla8Holes = ((community.regla8Map || {})[course?.id]) || [];
   // Con algún grupo de 1 o 2 jugadores, la ronda es SIMPLE: solo tarjeta, sin apuestas.
   const simpleMode = teams.some((t) => t.players.length < 3);
@@ -1465,7 +1472,7 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
           {/* REGLAS DE LA RONDA: por defecto las de la comunidad, personalizables */}
           <label style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0 10px", cursor: "pointer" }}>
             <input type="checkbox" checked={!!custom} style={{ width: 18, height: 18 }}
-              onChange={(e) => setCustom(e.target.checked ? { rulePct: community.rulePct, tokenValue: community.tokenValue, front: community.bet.front, back: community.bet.back, match: community.bet.match, bye: community.bet.bye, regla8: community.regla8 } : null)} />
+              onChange={(e) => setCustom(e.target.checked ? { rulePct: community.rulePct, tokenValue: community.tokenValue, front: community.bet.front, back: community.bet.back, match: community.bet.match, bye: community.bet.bye, regla8: community.regla8, multiStroke: !!community.multiStroke } : null)} />
             <span style={{ fontSize: 13.5 }}><b>Personalizar reglas</b> de esta ronda (si no, se usan las de {community.name}: {community.rulePct}% hcp)</span>
           </label>
           {custom && (
@@ -1479,6 +1486,10 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                   <Field key={k} label={l}><input style={inputStyle} type="number" inputMode="numeric" value={custom[k]} onChange={(e) => setCustom({ ...custom, [k]: e.target.value })} /></Field>
                 ))}
               </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: 8 }}>
+                <input type="checkbox" checked={!!custom.multiStroke} onChange={(e) => setCustom({ ...custom, multiStroke: e.target.checked })} style={{ width: 18, height: 18 }} />
+                <span style={{ fontSize: 13 }}><b>Más de 1 stroke por hoyo</b>: con gaps mayores a 18 se dan 2 strokes en los hoyos de menor índice.</span>
+              </label>
               <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                 <input type="checkbox" checked={!!custom.regla8} onChange={(e) => setCustom({ ...custom, regla8: e.target.checked })} style={{ width: 18, height: 18 }} />
                 <span style={{ fontSize: 13 }}><b>Regla 8</b>: en los par 3 marcados, el stroke solo empata.</span>
@@ -1612,12 +1623,12 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                 {entryMode === "hole" ? (
                   <HoleByHole key={t.id} course={course} start={t.start} playerList={t.players}
                     scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))}
-                    rulePct={rules.rulePct} onSet={(pid, h, v) => setGross(t.id, pid, h, v)} />
+                    rulePct={rules.rulePct} multiStroke={rules.multiStroke} onSet={(pid, h, v) => setGross(t.id, pid, h, v)} />
                 ) : (
                   <ScoreMatrix event={{ teams: [t] }} course={course} onChange={setGross} />
                 )}
                 <GroupLiveSummary course={course} playerList={t.players}
-                  scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))} rulePct={rules.rulePct} start={t.start} />
+                  scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))} rulePct={rules.rulePct} start={t.start} multiStroke={rules.multiStroke} />
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10 }}>
@@ -2059,7 +2070,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
       };
     });
     const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
-    const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, regla8Holes: ((community.regla8Map || {})[event.courseId]) || [] };
+    const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, regla8Holes: ((community.regla8Map || {})[event.courseId]) || [], multiStroke: !!community.multiStroke };
     const results = computeEvent(JSON.parse(JSON.stringify(evObj)), course, rules);
     // Marca a los invitados: juegan en las cuentas del día pero no cuentan
     // para la money list acumulada de la comunidad.
@@ -2259,7 +2270,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
           {entryMode === "hole" ? (
             <HoleByHole key={g.id} course={course} start={g.start} playerList={playerList} scores={g.scores} rulePct={community.rulePct}
-              onSet={(pid, h, v) => setGroupScore(g.id, pid, h, v)} />
+              multiStroke={!!community.multiStroke} onSet={(pid, h, v) => setGroupScore(g.id, pid, h, v)} />
           ) : (
             <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 14 }}>
               <div style={{ minWidth: 30 * 19 + 140 }}>
@@ -2282,7 +2293,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             </div>
           )}
 
-          <GroupLiveSummary course={course} playerList={playerList} scores={g.scores} rulePct={community.rulePct} start={g.start} />
+          <GroupLiveSummary course={course} playerList={playerList} scores={g.scores} rulePct={community.rulePct} start={g.start} multiStroke={!!community.multiStroke} />
 
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
             <Btn variant="ghost" onClick={() => setScoringGroup(null)}>← Grupos</Btn>
@@ -2422,6 +2433,7 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
     rulePct: community.rulePct, tokenValue: community.tokenValue, currency: community.currency,
     front: community.bet.front, back: community.bet.back, match: community.bet.match, bye: community.bet.bye,
     medalTokens: community.medal?.tokens || 0, medalPct: community.medal?.rulePct || 100, regla8: !!community.regla8,
+    multiStroke: !!community.multiStroke,
   });
   const [map, setMap] = useState(community.regla8Map || {});
   const upd = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -2451,6 +2463,15 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
         <Field label="Caminos Medal (0 = sin Medal)"><input style={inputStyle} type="number" inputMode="numeric" value={f.medalTokens} onChange={upd("medalTokens")} /></Field>
         <Field label="% hándicap del Medal"><input style={inputStyle} type="number" inputMode="numeric" value={f.medalPct} onChange={upd("medalPct")} /></Field>
       </div>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={f.multiStroke} onChange={(e) => setF({ ...f, multiStroke: e.target.checked })} style={{ width: 18, height: 18, marginTop: 2 }} />
+        <span style={{ fontSize: 13.5 }}>
+          <b>Más de 1 stroke por hoyo</b>: cuando la diferencia de hándicap ajustado supera los 18, se reparte un segundo stroke en los hoyos de menor índice.
+          <span style={{ display: "block", color: "#7a8780", fontSize: 12.5, marginTop: 2 }}>
+            {f.multiStroke ? "Activada: un gap de 20, por ejemplo, da 2 strokes en los hoyos de índice 1 y 2." : "Desactivada (clásico): máximo 1 stroke por hoyo, aunque el gap sea mayor a 18."}
+          </span>
+        </span>
+      </label>
       <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, cursor: "pointer" }}>
         <input type="checkbox" checked={f.regla8} onChange={(e) => setF({ ...f, regla8: e.target.checked })} style={{ width: 18, height: 18 }} />
         <span style={{ fontSize: 13.5 }}><b>Regla 8</b>: en los hoyos marcados abajo, el stroke solo sirve para empatar (no para ganar el hoyo).</span>
@@ -2485,7 +2506,7 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
           rulePct: +f.rulePct || 0, tokenValue: +f.tokenValue || 0, currency: f.currency,
           bet: { front: +f.front || 0, back: +f.back || 0, match: +f.match || 0, bye: +f.bye || 0 },
           medal: { tokens: +f.medalTokens || 0, rulePct: +f.medalPct || 100 },
-          regla8: !!f.regla8, regla8Map: map,
+          regla8: !!f.regla8, regla8Map: map, multiStroke: !!f.multiStroke,
         })}>Guardar reglas</Btn>
       </div>
     </Card>
