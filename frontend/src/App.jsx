@@ -1110,7 +1110,7 @@ function TeeDraw({ g, players, onDraw, canDraw }) {
 }
 
 /* Entrada de scores hoyo por hoyo, en el orden de salida del grupo. */
-function HoleByHole({ course, start, playerList, scores, rulePct, onSet, multiStroke = false }) {
+function HoleByHole({ course, start, playerList, scores, rulePct, onSet, multiStroke = false, readOnly = false }) {
   const order = playOrder(start);
   const isFilled = (pid, h) => { const v = (scores[pid] || [])[h]; return v !== "" && v != null; };
   const holeDone = (h) => playerList.every((p) => isFilled(p.id, h));
@@ -1176,12 +1176,12 @@ function HoleByHole({ course, start, playerList, scores, rulePct, onSet, multiSt
                     {st > 0 ? "●".repeat(Math.min(st, 3)) + ` recibe ${st} stroke${st > 1 ? "s" : ""}` : "sin stroke aquí"}
                   </div>
                 </div>
-                <button style={stepBtn} onClick={() => bump(p.id, -1)} aria-label="menos">−</button>
-                <input value={v ?? ""} onChange={typed(p.id)} inputMode="numeric" pattern="[0-9]*" placeholder="·" style={{
+                {!readOnly && <button style={stepBtn} onClick={() => bump(p.id, -1)} aria-label="menos">−</button>}
+                <input value={v ?? ""} onChange={typed(p.id)} readOnly={readOnly} inputMode="numeric" pattern="[0-9]*" placeholder="·" style={{
                   width: 56, height: 46, textAlign: "center", fontSize: 22, fontWeight: 800, fontFamily: "'Spline Sans'",
                   border: `1.5px solid ${v === "" || v == null ? C.line : C.green}`, borderRadius: 12, outline: "none",
-                  background: "#fff", color: v != null && v !== "" && v < course.pars[h] ? "#3fa46a" : v != null && v !== "" && v > course.pars[h] ? C.red : C.ink }} />
-                <button style={stepBtn} onClick={() => bump(p.id, 1)} aria-label="más">+</button>
+                  background: readOnly ? "transparent" : "#fff", color: v != null && v !== "" && v < course.pars[h] ? "#3fa46a" : v != null && v !== "" && v > course.pars[h] ? C.red : C.ink }} />
+                {!readOnly && <button style={stepBtn} onClick={() => bump(p.id, 1)} aria-label="más">+</button>}
               </div>
             );
           })}
@@ -1668,7 +1668,12 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
             : <Results results={results} community={{ ...community, tokenValue: rules.tokenValue, currency: rules.currency }} />}
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 20 }}>
             <Btn variant="ghost" onClick={() => setStep(3)}>← Editar scores</Btn>
-            <Btn variant="gold" onClick={() => onSave({ ...event, results })}>Guardar ronda</Btn>
+            <Btn variant="gold" onClick={() => {
+              // marca a los invitados para distinguirlos en la tarjeta y excluirlos de money lists
+              const gIds = new Set(guests.map((x) => x.id));
+              results.rows.forEach((row) => { if (gIds.has(row.id)) row.guest = true; });
+              onSave({ ...event, guests, results });
+            }}>Guardar ronda</Btn>
           </div>
         </div>
       )}
@@ -1949,41 +1954,58 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
                 )}
               </div>
             </div>
-            {myPlayer && course && (
+            {course && (
               <button onClick={() => setOpenCardIdx(isOpen ? null : i)} style={{ marginTop: 8, border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>
-                {isOpen ? "Ocultar mi tarjeta ▲" : "Ver mi tarjeta ▼"}
+                {isOpen ? "Ocultar tarjetas ▲" : "Ver tarjetas de la ronda ▼"}
               </button>
             )}
-            {isOpen && myPlayer && course && (
-              <div style={{ overflowX: "auto", marginTop: 8, borderTop: `1px solid ${C.line}`, paddingTop: 8 }}>
-                <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 26 * 19 + 70 }}>
-                  <tbody>
-                    <tr>
-                      <td style={{ padding: "3px 8px", color: "#7a8780", fontWeight: 700, textAlign: "left" }}>Hoyo</td>
-                      {course.pars.map((_, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center", color: "#7a8780", fontWeight: 700, minWidth: 26 }}>{h + 1}</td>)}
-                      <td style={{ padding: "3px 8px", fontWeight: 700, color: "#7a8780" }}>Tot</td>
-                    </tr>
-                    <tr>
-                      <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Par</td>
-                      {course.pars.map((p, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center" }}>{p}</td>)}
-                      <td style={{ padding: "3px 8px", fontWeight: 700 }}>{course.pars.reduce((a, b) => a + b, 0)}</td>
-                    </tr>
-                    <tr>
-                      <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Yo</td>
-                      {myPlayer.gross.map((g, h) => {
-                        const v = parseInt(g);
-                        const col = !v ? "#9aa69e" : v < course.pars[h] ? "#3fa46a" : v > course.pars[h] ? C.red : C.ink;
-                        return <td key={h} style={{ padding: "3px 0", textAlign: "center", fontWeight: 700, color: col }}>{g ?? "·"}</td>;
+            {isOpen && course && (() => {
+              const guestIds = new Set((r.guests || []).map((x) => x.id));
+              const rowsOf = r.teams.flatMap((t) => t.players.map((p) => ({ ...p, teamId: t.id, guest: guestIds.has(p.id) || (r.results.rows.find((x) => x.id === p.id) || {}).guest })));
+              return (
+                <div style={{ overflowX: "auto", marginTop: 8, borderTop: `1px solid ${C.line}`, paddingTop: 8 }}>
+                  <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 26 * 21 + 120 }}>
+                    <tbody>
+                      <tr>
+                        <td style={{ padding: "3px 8px", color: "#7a8780", fontWeight: 700, textAlign: "left", minWidth: 110 }}>Hoyo</td>
+                        {course.pars.map((_, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center", color: "#7a8780", fontWeight: 700, minWidth: 26 }}>{h + 1}</td>)}
+                        <td style={{ padding: "3px 6px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>F</td>
+                        <td style={{ padding: "3px 6px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>B</td>
+                        <td style={{ padding: "3px 8px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>Tot</td>
+                      </tr>
+                      <tr style={{ background: C.cream }}>
+                        <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Par</td>
+                        {course.pars.map((p, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center" }}>{p}</td>)}
+                        <td style={{ padding: "3px 6px", textAlign: "center" }}>{course.pars.slice(0, 9).reduce((a, b) => a + b, 0)}</td>
+                        <td style={{ padding: "3px 6px", textAlign: "center" }}>{course.pars.slice(9).reduce((a, b) => a + b, 0)}</td>
+                        <td style={{ padding: "3px 8px", fontWeight: 700, textAlign: "center" }}>{course.pars.reduce((a, b) => a + b, 0)}</td>
+                      </tr>
+                      {rowsOf.map((p) => {
+                        const mine = p.id === me.id;
+                        return (
+                          <tr key={p.id} style={{ borderTop: `1px solid ${C.line}`, background: mine ? "rgba(212,168,67,.10)" : "transparent" }}>
+                            <td style={{ padding: "3px 8px", fontWeight: mine ? 800 : 600, textAlign: "left", whiteSpace: "nowrap" }}>
+                              {mine ? "★ " : ""}{p.name}{p.guest ? " 🎟️" : ""} <span style={{ color: "#9aa69e", fontWeight: 500 }}>({p.hcp})</span>
+                            </td>
+                            {p.gross.map((g, h) => {
+                              const v = parseInt(g);
+                              const col = !v ? "#9aa69e" : v < course.pars[h] ? "#3fa46a" : v > course.pars[h] ? C.red : C.ink;
+                              return <td key={h} style={{ padding: "3px 0", textAlign: "center", fontWeight: 700, color: col }}>{g ?? "·"}</td>;
+                            })}
+                            <td style={{ padding: "3px 6px", textAlign: "center" }}>{fSum(p.gross, 0, 9)}</td>
+                            <td style={{ padding: "3px 6px", textAlign: "center" }}>{fSum(p.gross, 9, 18)}</td>
+                            <td style={{ padding: "3px 8px", fontWeight: 800, textAlign: "center" }}>{fSum(p.gross, 0, 18)}</td>
+                          </tr>
+                        );
                       })}
-                      <td style={{ padding: "3px 8px", fontWeight: 800 }}>{fSum(myPlayer.gross, 0, 18)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>
-                  Front: <b>{fSum(myPlayer.gross, 0, 9)}</b> · Back: <b>{fSum(myPlayer.gross, 9, 18)}</b> · Total: <b>{fSum(myPlayer.gross, 0, 18)}</b> · hcp del día: {myPlayer.hcp}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize: 12, color: "#7a8780", marginTop: 6 }}>
+                    Tarjeta completa de la ronda: todos los jugadores{(r.guests || []).length ? ", incluidos los invitados (🎟️)" : ""}. Entre paréntesis, el hándicap con el que jugó cada uno.
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </Card>
         );
       })}
@@ -2219,8 +2241,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   }
 
   if (event.status === "jugando") {
-    const g = mode === "play" ? groups.find((x) => x.id === scoringGroup) : null;
+    const g = groups.find((x) => x.id === scoringGroup);
     if (g) {
+      // Anota el anotador designado (y los admins). Los demás participantes
+      // ven la tarjeta EN VIVO y el resumen interno, en solo lectura.
+      const canEdit = mode === "play" && (g.scorerId === me.id || admin);
       // el orden sorteado define las parejas del resumen interno
       const playerList = groupOrder(g).map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
       return (
@@ -2229,7 +2254,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <div>
               <div style={{ fontWeight: 700 }}>Grupo {g.id} · anotador: {resolveName(g.scorerId, players)}</div>
-              <div style={{ fontSize: 13, color: "#7a8780" }}>Golpes brutos por hoyo · solo números enteros.</div>
+              <div style={{ fontSize: 13, color: "#7a8780" }}>
+                {canEdit ? "Golpes brutos por hoyo · solo números enteros." : "👀 Vista en vivo (solo lectura) · se actualiza sola con lo que anota el anotador."}
+              </div>
             </div>
             <div style={{ display: "flex", gap: 4, background: C.creamDk, borderRadius: 10, padding: 3 }}>
               {[["hole", "Hoyo por hoyo"], ["matrix", "Tarjeta completa"]].map(([m, l]) => (
@@ -2243,11 +2270,13 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           <Card style={{ padding: 12, marginBottom: 12, border: editHcps ? `1.5px solid ${C.gold}` : `1px solid ${C.line}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div style={{ fontWeight: 700, fontSize: 14, color: C.green }}>Hándicaps de hoy</div>
-              <button onClick={() => setEditHcps(!editHcps)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>
-                {editHcps ? "Listo ✓" : "✏️ Corregir"}
-              </button>
+              {canEdit && (
+                <button onClick={() => setEditHcps(!editHcps)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>
+                  {editHcps ? "Listo ✓" : "✏️ Corregir"}
+                </button>
+              )}
             </div>
-            {!editHcps ? (
+            {!(editHcps && canEdit) ? (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                 {playerList.map((p) => (
                   <Chip key={p.id} tone="neutral">{p.name.split(" ")[0]} · hcp {p.hcp === "" || p.hcp == null ? "—" : p.hcp} (aj. {p.hcp === "" || p.hcp == null ? "—" : adjustedHcp(parseInt(p.hcp) || 0, community.rulePct)})</Chip>
@@ -2270,7 +2299,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
           {entryMode === "hole" ? (
             <HoleByHole key={g.id} course={course} start={g.start} playerList={playerList} scores={g.scores} rulePct={community.rulePct}
-              multiStroke={!!community.multiStroke} onSet={(pid, h, v) => setGroupScore(g.id, pid, h, v)} />
+              multiStroke={!!community.multiStroke} readOnly={!canEdit} onSet={(pid, h, v) => setGroupScore(g.id, pid, h, v)} />
           ) : (
             <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 14 }}>
               <div style={{ minWidth: 30 * 19 + 140 }}>
@@ -2283,8 +2312,8 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                     <React.Fragment key={pid}>
                       <div style={{ padding: "6px 10px", fontWeight: 600, fontSize: 13, background: C.cream, borderTop: `1px solid ${C.line}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{resolveName(pid, players)}</div>
                       {Array.from({ length: 18 }, (_, h) => (
-                        <input key={h} value={(g.scores[pid] || [])[h] ?? ""} inputMode="numeric" pattern="[0-9]*" onChange={(e) => setGroupScore(g.id, pid, h, e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))}
-                          style={{ border: `1px solid ${C.line}`, textAlign: "center", fontFamily: "'Spline Sans'", fontSize: 14, padding: "6px 0", outline: "none", background: "#fff", minWidth: 30 }} />
+                        <input key={h} value={(g.scores[pid] || [])[h] ?? ""} inputMode="numeric" pattern="[0-9]*" readOnly={!canEdit} onChange={(e) => setGroupScore(g.id, pid, h, e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))}
+                          style={{ border: `1px solid ${C.line}`, textAlign: "center", fontFamily: "'Spline Sans'", fontSize: 14, padding: "6px 0", outline: "none", background: canEdit ? "#fff" : C.cream, minWidth: 30 }} />
                       ))}
                     </React.Fragment>
                   ))}
@@ -2297,7 +2326,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
             <Btn variant="ghost" onClick={() => setScoringGroup(null)}>← Grupos</Btn>
-            <Btn variant="gold" disabled={!groupFilled(g)} onClick={() => setScoringGroup(null)}>Guardar scores del grupo</Btn>
+            {canEdit && <Btn variant="gold" disabled={!groupFilled(g)} onClick={() => setScoringGroup(null)}>Guardar scores del grupo</Btn>}
           </div>
         </div>
       );
@@ -2317,13 +2346,14 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         <Head />
         {mode === "admin" && (
           <Card style={{ padding: 12, marginBottom: 12, background: C.cream }}>
-            <div style={{ fontSize: 13, color: "#3a4a42" }}>ℹ️ Los scores se anotan desde <b>Iniciar Ronda</b> (cada anotador entra ahí desde su celular). Aquí puedes ver el avance, gestionar las parejas y consolidar al final.</div>
+            <div style={{ fontSize: 13, color: "#3a4a42" }}>ℹ️ Los scores se anotan desde <b>Iniciar Ronda</b> (cada anotador entra ahí desde su celular). Aquí puedes seguir el avance en vivo, gestionar las parejas y consolidar al final.</div>
           </Card>
         )}
         <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
           {groups.map((g) => {
             const done = groupFilled(g);
             const canDraw = admin || g.playerIds.includes(me.id);
+            const iScore = mode === "play" && (g.scorerId === me.id || admin);
             return (
               <Card key={g.id} style={{ padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
@@ -2334,7 +2364,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
-                    {mode === "play" && <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringGroup(g.id)}>{done ? "Editar" : "Llenar scores"}</Btn>}
+                    <Btn variant={iScore && !done ? "primary" : "ghost"} onClick={() => setScoringGroup(g.id)}>
+                      {iScore ? (done ? "Editar" : "Llenar scores") : "👀 Ver en vivo"}
+                    </Btn>
                   </div>
                 </div>
                 <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final, dm) => setGroup(g.id, { drawnOrder: final, drawnMode: dm })} />
@@ -3093,6 +3125,12 @@ export default function App() {
     if (!c) return;
     setEventJump(ev.id); setOpenCommunity(c); setView("communities");
   };
+  // ¿Soy anotador (o admin) de algún grupo del evento? Define si entro a anotar o a ver en vivo.
+  const isScorer = (ev) => {
+    const c = communities.find((x) => x.id === ev.communityId);
+    if (c && isAdmin(c, me.id)) return true;
+    return (ev.groups || []).some((g) => g.scorerId === me.id);
+  };
   const EVJUMP_STATUS = { inscripcion: ["Inscripción abierta", "gold"], grupos: ["Armando grupos", "gold"], jugando: ["En juego", "green"] };
 
   const NavBtn = ({ id, label }) => (
@@ -3161,7 +3199,7 @@ export default function App() {
                         <div style={{ fontWeight: 700 }}>⛳ {e.name} <Chip tone="green">{lbl}</Chip></div>
                         <div style={{ fontSize: 13, color: "#7a8780" }}>{c?.name} · {e.date}</div>
                       </div>
-                      <Btn onClick={() => { if (e.status === "jugando") { setPlayEventId(e.id); setView("round"); } else goToEvent(e); }}>{e.status === "jugando" ? "Anotar scores →" : "Continuar →"}</Btn>
+                      <Btn onClick={() => { if (e.status === "jugando") { setPlayEventId(e.id); setView("round"); } else goToEvent(e); }}>{e.status === "jugando" ? (isScorer(e) ? "Anotar scores →" : "👀 Ver en vivo →") : "Continuar →"}</Btn>
                     </Card>
                   );
                 })}
@@ -3254,7 +3292,7 @@ export default function App() {
                     </div>
                     <Btn variant={e.status === "inscripcion" && !registered ? "gold" : "primary"}
                       onClick={() => { if (e.status === "jugando") setPlayEventId(e.id); else goToEvent(e); }}>
-                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : e.status === "jugando" ? "Anotar scores →" : "Continuar →"}
+                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : e.status === "jugando" ? (isScorer(e) ? "Anotar scores →" : "👀 Ver en vivo →") : "Continuar →"}
                     </Btn>
                   </Card>
                 );
