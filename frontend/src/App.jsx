@@ -348,38 +348,26 @@ function SimpleResults({ results }) {
   );
 }
 
-/* ---------------- DATOS DE EJEMPLO ---------------- */
-const EXAMPLE_COURSE = {
-  id: "asia",
-  name: "Asia Golf",
-  pars: [5, 4, 4, 4, 3, 5, 4, 3, 4, 4, 4, 5, 3, 4, 4, 3, 4, 5],
-  strokes: [15, 9, 5, 7, 13, 11, 3, 17, 1, 2, 8, 12, 14, 10, 6, 18, 4, 16],
-};
-// Los Inkas Golf Club (Lima, Perú) — par 72. Pares y stroke index oficiales
-// según la tarjeta del programa KFB (hoja "Reglas").
-const LOS_INKAS_COURSE = {
-  id: "losinkas",
-  name: "Golf Los Inkas",
-  location: "Monterrico, Lima · Perú",
-  pars:    [4, 4, 5, 3, 4, 3, 4, 5, 4, 4, 4, 4, 3, 5, 4, 5, 3, 4],
-  strokes: [9, 13, 5, 15, 1, 17, 11, 3, 7, 8, 10, 14, 18, 12, 2, 4, 16, 6],
-  tieOnlyHoles: [6, 13], // Regla 8: par 3 donde el stroke solo empata (si la comunidad la activa)
-};
-
-const EXAMPLE_COMMUNITY = {
-  id: "amarillo65",
-  name: "Amarillo 65",
-  gameMode: "Machetero",
-  rulePct: 85,
-  tokenValue: 5,
-  currency: "S/.",
-  bet: { front: 2, back: 2, match: 3, bye: 1 },
-  medal: { tokens: 0, rulePct: 100 },
-  regla8: false,
-  admin: "P1",
-  admins: [],
-  members: ["demo","P1","P2","P3","P4","P5","P6","P7","P8","P9","P10","P11","P12"],
-};
+/* ---------------- CATÁLOGO DE CANCHAS ----------------
+   Base de datos oficial que mantiene el administrador de la app.
+   Los usuarios solo la consultan; las reglas de juego viven en las
+   comunidades o en cada ronda. */
+const SEED_COURSES = [
+  {
+    id: "losinkas",
+    name: "Golf Los Inkas",
+    location: "Monterrico, Lima · Perú",
+    pars:    [4, 4, 5, 3, 4, 3, 4, 5, 4, 4, 4, 4, 3, 5, 4, 5, 3, 4],
+    strokes: [9, 13, 5, 15, 1, 17, 11, 3, 7, 8, 10, 14, 18, 12, 2, 4, 16, 6],
+  },
+  {
+    id: "asia",
+    name: "Asia Golf",
+    location: "Asia, Lima · Perú",
+    pars:    [5, 4, 4, 4, 3, 5, 4, 3, 4, 4, 4, 5, 3, 4, 4, 3, 4, 5],
+    strokes: [15, 9, 5, 7, 13, 11, 3, 17, 1, 2, 8, 12, 14, 10, 6, 18, 4, 16],
+  },
+];
 
 /* Resuelve el nombre legible de un id de miembro/participante */
 function resolveName(id, players) {
@@ -463,91 +451,6 @@ function playerHcpHistory(meId, rounds) {
   });
   return hist;
 }
-const EX_HCP = { 1:5,2:10,3:10,4:1,5:18,6:13,7:15,8:20,9:10,10:-1,11:15 };
-const EX_GROSS = {
-  1:[5,5,4,4,3,5,5,3,5,5,4,4,3,5,5,4,4,5],
-  2:[6,5,4,4,3,5,4,3,5,5,5,5,3,5,5,4,5,5],
-  3:[6,5,4,4,3,5,5,3,5,5,5,5,3,5,5,3,5,5],
-  4:[5,4,4,4,3,5,4,3,4,4,4,5,3,4,4,3,4,5],
-  5:[6,5,5,5,4,6,5,4,5,5,5,6,4,5,5,4,5,6],
-  6:[5,4,4,6,4,5,5,3,5,5,7,5,3,4,4,3,5,5],
-  7:[6,5,5,5,4,6,5,4,5,5,7,5,3,4,4,3,5,5],
-  8:[6,5,5,5,4,6,5,4,5,5,5,6,4,5,5,4,5,6],
-  9:[6,4,5,5,4,5,5,4,5,5,5,6,4,4,5,4,5,5],
-  10:[5,4,4,4,3,5,4,3,4,4,4,5,3,4,4,3,4,5],
-  11:[6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6],
-};
-const buildExampleEvent = () => ({
-  id: "ex-" + Date.now(),
-  courseId: "asia",
-  communityId: "amarillo65",
-  date: "2025-02-10",
-  teams: [
-    { id: 1, start: 1, players: [1,2,3,4].map((i)=>({id:"P"+i,name:"Player "+i,hcp:EX_HCP[i],gross:EX_GROSS[i]})), pairs: [["P1","P3"],["P2","P4"]] },
-    { id: 2, start: 10, players: [5,6,7,8].map((i)=>({id:"P"+i,name:"Player "+i,hcp:EX_HCP[i],gross:EX_GROSS[i]})), pairs: [["P5","P6"],["P7","P8"]] },
-    { id: 3, start: 1, players: [9,10,11].map((i)=>({id:"P"+i,name:"Player "+i,hcp:EX_HCP[i],gross:EX_GROSS[i]})), pairs: [] },
-  ],
-});
-
-/* ---- Roster real "Korn Ferry Boys" (del Excel KFB 2026) para demos ---- */
-const KFB_ROSTER = [
-  ["Mauricio", "Melendez", 0], ["Diego", "Guinea", 6], ["Rodrigo", "Gastelumendi", 6],
-  ["Boris", "Ljubicic", 12], ["Rodrigo", "Arana", 8], ["Pablo", "Caceres", 5],
-  ["Pablo", "Lupis", 9], ["Iago", "Bellatin", 3], ["Alessandro", "Morachimo", 12],
-  ["Santiago", "Rubio", 7], ["Carlo", "Bellatin", 8], ["Sebastian", "Moreno", 3],
-  ["Diego", "Bustamante", 12], ["Joaquin", "Corzo", 1], ["Julian", "Vasquez", 5],
-  ["Santiago", "Zubiate", 0], ["Joel", "Nawrocki", 3], ["Daniel", "Antunez", 4],
-  ["Rodrigo", "Horna", 13], ["Oscar", "Lauz", 6], ["Jaime", "Tagle", 4],
-  ["Gino", "Michilot", 8], ["Gonzalo", "Urbina", 3], ["Aldo", "Amianto", 9],
-  ["Javier", "Ludoweig", 6],
-];
-const KFB_PLAYERS = KFB_ROSTER.map(([name, last, hcp], i) => ({
-  id: "kfb" + String(i + 1).padStart(2, "0"), name, last, hcp, demo: true,
-}));
-const KORN_FERRY_COMMUNITY = {
-  id: "kfb",
-  name: "Korn Ferry Boys",
-  gameMode: "Machetero",
-  rulePct: 75,            // Regla 4: se juega al 75% del hándicap
-  tokenValue: 5,
-  currency: "S/.",
-  bet: { front: 2, back: 2, match: 3, bye: 1 },
-  medal: { tokens: 0, rulePct: 100 },
-  regla8: false,
-  admin: "demo",
-  admins: [],
-  members: ["demo", ...KFB_PLAYERS.map((p) => p.id)],
-};
-
-// Scores reales (18 hoyos en Los Inkas) de los primeros 12 del roster, hoja "Registro Medal"
-const KFB_EX_GROSS = [
-  [4,4,4,3,4,3,5,5,5,5,5,4,3,4,5,5,3,6], // Melendez
-  [4,4,5,4,4,4,4,7,5,5,5,4,5,5,5,6,5,5], // Guinea
-  [5,4,5,3,5,3,4,6,6,4,6,6,5,5,5,5,3,5], // Gastelumendi
-  [6,5,5,4,5,3,5,6,7,4,5,4,4,6,6,6,4,6], // Ljubicic
-  [6,4,5,3,5,3,4,5,6,5,6,4,3,5,4,5,4,5], // Arana
-  [5,5,4,4,7,4,5,5,6,4,5,5,3,5,5,5,5,4], // Caceres
-  [5,5,5,4,6,4,5,5,6,3,4,6,3,7,6,5,5,6], // Lupis
-  [5,4,4,3,5,3,5,5,4,4,4,4,3,4,4,5,4,4], // Iago Bellatin
-  [4,6,5,5,5,3,5,6,5,5,5,4,4,5,5,6,4,5], // Morachimo
-  [5,5,6,4,6,4,3,5,5,6,4,4,3,5,4,6,4,5], // Rubio
-  [5,4,4,4,5,3,6,5,5,5,6,4,3,5,5,5,4,4], // Carlo Bellatin
-  [5,4,5,5,4,4,4,5,4,5,5,5,2,5,6,5,3,4], // Moreno
-];
-const buildKFBExampleEvent = () => {
-  const mk = (i) => ({ id: KFB_PLAYERS[i].id, name: KFB_PLAYERS[i].name + " " + KFB_PLAYERS[i].last, hcp: KFB_PLAYERS[i].hcp, gross: KFB_EX_GROSS[i].slice() });
-  return {
-    id: "kfb-ex-1",
-    courseId: "losinkas",
-    communityId: "kfb",
-    date: "2026-05-23",
-    teams: [
-      { id: 1, start: 1,  players: [0,1,2,3].map(mk),  pairs: [[KFB_PLAYERS[0].id,KFB_PLAYERS[2].id],[KFB_PLAYERS[1].id,KFB_PLAYERS[3].id]] },
-      { id: 2, start: 10, players: [4,5,6,7].map(mk),  pairs: [[KFB_PLAYERS[4].id,KFB_PLAYERS[5].id],[KFB_PLAYERS[6].id,KFB_PLAYERS[7].id]] },
-      { id: 3, start: 1,  players: [8,9,10,11].map(mk),pairs: [[KFB_PLAYERS[8].id,KFB_PLAYERS[9].id],[KFB_PLAYERS[10].id,KFB_PLAYERS[11].id]] },
-    ],
-  };
-};
 // Persistencia local del navegador (localStorage).
 const localStore = {
   async get(k, def) { try { const r = localStorage.getItem(k); return r != null ? JSON.parse(r) : def; } catch { return def; } },
@@ -648,10 +551,8 @@ const cloudStore = {
 
 const store = CLOUD ? cloudStore : localStore;
 
-/* En modo nube: asegura que el usuario autenticado tenga su registro de
-   jugador. El primer usuario en registrarse queda como admin de las
-   comunidades de ejemplo (que vienen con admin "demo"). */
-function ensureCloudPlayer(user, players, setPlayers, setCommunities) {
+/* En modo nube: asegura que el usuario autenticado tenga su registro de jugador. */
+function ensureCloudPlayer(user, players, setPlayers) {
   const found = players.find((p) => p.id === user.id);
   if (found) return found;
   const meta = user.user_metadata || {};
@@ -664,13 +565,7 @@ function ensureCloudPlayer(user, players, setPlayers, setCommunities) {
     plan: "free",
     communities: [],
   };
-  const isFirstAccount = !players.some((p) => p.email);
   setPlayers((prev) => (prev.some((p) => p.id === user.id) ? prev : [...prev, rec]));
-  if (isFirstAccount) {
-    setCommunities((prev) => prev.map((c) => (c.admin === "demo"
-      ? { ...c, admin: user.id, members: c.members.includes(user.id) ? c.members : [user.id, ...c.members.filter((m) => m !== "demo")] }
-      : c)));
-  }
   return rec;
 }
 
@@ -815,9 +710,9 @@ function Auth({ onAuth, players, setPlayers }) {
           {mode === "signup" && <Field label="Repetir contraseña*"><input style={inputStyle} type="password" value={f.pass2} onChange={upd("pass2")} /></Field>}
           {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
           <Btn onClick={submit} style={{ width: "100%", marginTop: 4 }}>{mode === "login" ? "Entrar" : "Crear cuenta"}</Btn>
-          {mode === "login" && !CLOUD && (
+          {mode === "login" && (
             <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: "#6b7a72" }}>
-              Demo: usa <b style={{color:C.green}}>demo@golf.com</b> / <b style={{color:C.green}}>demo</b>
+              ¿Primera vez? Crea tu cuenta y arma tu comunidad.
             </div>
           )}
         </Card>
@@ -1769,6 +1664,15 @@ function Communities({ communities, me, onOpen, onCreate }) {
         <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green }}>Comunidades</div>
         <Btn variant="gold" onClick={() => setCreating(true)}>+ Nueva comunidad</Btn>
       </div>
+      {communities.length === 0 && (
+        <Card style={{ padding: 22 }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Todavía no hay comunidades</div>
+          <div style={{ color: "#7a8780", fontSize: 13.5, lineHeight: 1.6 }}>
+            Crea la tuya con <b>+ Nueva comunidad</b>: defines las reglas (% de hándicap, caminos por apuesta, Regla 8) y desde ahí convocas eventos.
+            Tus amigos crean su cuenta, postulan y tú los aceptas. También puedes jugar sin comunidad desde <b>Iniciar Ronda → Ronda libre</b>.
+          </div>
+        </Card>
+      )}
       {mine.length > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: "#7a8780", margin: "6px 0", textTransform: "uppercase", letterSpacing: .5 }}>Mis comunidades</div>}
       {mine.map((c) => <Row key={c.id} c={c} />)}
       {others.length > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: "#7a8780", margin: "18px 0 6px", textTransform: "uppercase", letterSpacing: .5 }}>Otras comunidades</div>}
@@ -2143,9 +2047,19 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                 return <button key={m.id} onClick={() => toggleRegister(m.id)} style={{ border: `1.5px solid ${sel ? C.green : C.line}`, cursor: "pointer", borderRadius: 999, padding: "6px 13px", fontWeight: 600, fontSize: 13, background: sel ? C.green : "#fff", color: sel ? C.cream : C.ink }}>{m.name}</button>;
               })}
             </div>
+            <div style={{ borderTop: `1px solid ${C.line}`, marginTop: 14, paddingTop: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, textTransform: "uppercase", marginBottom: 8 }}>Agregar invitado (no es de la comunidad)</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={{ ...inputStyle, flex: 1 }} placeholder="Nombre del invitado" value={guestName}
+                  onChange={(e) => setGuestName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addGuest(); }} />
+                <Btn variant="ghost" disabled={!guestName.trim()} onClick={addGuest}>+ Agregar</Btn>
+              </div>
+              <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>Juega y entra en las cuentas del día, pero no cuenta para la money list acumulada.</div>
+            </div>
           </Card>
         )}
         {admin && <Btn disabled={registered.length < 3} onClick={() => updateEvent({ status: "grupos", groups: groups.length ? groups : [{ id: 1, start: 1, playerIds: [], hcps: {}, scorerId: null, loanPlayerId: null, dropPlayerId: null, scores: {} }] })}>Cerrar inscripción y armar grupos →</Btn>}
+        {admin && registered.length < 3 && <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 8 }}>Se necesitan al menos 3 inscritos ({registered.length} por ahora). Suma miembros o invitados arriba.</div>}
         {!admin && <div style={{ color: "#7a8780", fontSize: 13 }}>El administrador cerrará la inscripción y armará los grupos.</div>}
       </div>
     );
@@ -2799,9 +2713,9 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 const userIsPro = (me) => me && me.plan === "pro";
 
 /* Administrador de la APP (dueño de la plataforma): mantiene el catálogo de
-   canchas. En modo local, la cuenta demo hace de admin para poder probar. */
+   canchas. En modo local (sin nube) cualquiera puede gestionarlo, para probar. */
 const APP_ADMIN_EMAILS = ["horna.rodrigo@gmail.com"];
-const isAppAdmin = (me) => !!me && (CLOUD ? APP_ADMIN_EMAILS.includes((me.email || "").toLowerCase()) : me.id === "demo");
+const isAppAdmin = (me) => !!me && (!CLOUD || APP_ADMIN_EMAILS.includes((me.email || "").toLowerCase()));
 
 function AdSlot({ label = "Espacio publicitario", height = 92 }) {
   return (
@@ -3012,22 +2926,13 @@ export default function App() {
   // En modo nube solo debe llamarse con sesión iniciada (las políticas RLS
   // bloquean la lectura a usuarios anónimos y devolverían los defaults).
   const loadData = async () => {
-    const seededPlayers = await store.get("gb_players_v2", null);
-    // En modo nube no existe la cuenta demo: cada quien crea su cuenta real.
-    const base = seededPlayers || (CLOUD ? [...KFB_PLAYERS] : [
-      { id: "demo", name: "Demo", last: "Player", email: "demo@golf.com", birth: "1990-01-01", pass: "demo", plan: "free", communities: ["amarillo65", "kfb"] },
-      ...KFB_PLAYERS,
-    ]);
+    // Sin datos de ejemplo: cada quien crea su cuenta, sus comunidades y sus
+    // rondas. Lo único sembrado es el catálogo oficial de canchas.
+    const base = (await store.get("gb_players_v2", null)) || [];
     setPlayers(base);
-    setCommunities(await store.get("gb_comm_v2", CLOUD ? [KORN_FERRY_COMMUNITY] : [EXAMPLE_COMMUNITY, KORN_FERRY_COMMUNITY]));
-    setCourses(await store.get("gb_courses_v2", [EXAMPLE_COURSE, LOS_INKAS_COURSE]));
-    let defaultRounds = [];
-    try {
-      const ev = buildKFBExampleEvent();
-      const rules = { rulePct: KORN_FERRY_COMMUNITY.rulePct, tokenValue: KORN_FERRY_COMMUNITY.tokenValue, bet: KORN_FERRY_COMMUNITY.bet, medal: KORN_FERRY_COMMUNITY.medal, regla8: KORN_FERRY_COMMUNITY.regla8, currency: KORN_FERRY_COMMUNITY.currency };
-      defaultRounds = [{ ...ev, results: computeEvent(JSON.parse(JSON.stringify(ev)), LOS_INKAS_COURSE, rules) }];
-    } catch (e) { defaultRounds = []; }
-    setRounds(await store.get("gb_rounds_v2", defaultRounds));
+    setCommunities(await store.get("gb_comm_v2", []));
+    setCourses(await store.get("gb_courses_v2", SEED_COURSES));
+    setRounds(await store.get("gb_rounds_v2", []));
     setEvents(await store.get("gb_events_v1", []));
     return base;
   };
@@ -3040,7 +2945,7 @@ export default function App() {
         const u = data?.session?.user;
         if (u) {
           const base = await loadData();
-          setMe(base.find((p) => p.id === u.id) || ensureCloudPlayer(u, base, setPlayers, setCommunities));
+          setMe(base.find((p) => p.id === u.id) || ensureCloudPlayer(u, base, setPlayers));
         }
         // Sin sesión no se cargan datos: se cargan recién al iniciar sesión.
       } else {
@@ -3082,9 +2987,6 @@ export default function App() {
   useEffect(() => { if (canWrite) store.set("gb_rounds_v2", rounds); }, [rounds, canWrite]);
   useEffect(() => { if (canWrite) store.set("gb_events_v1", events); }, [events, canWrite]);
 
-  const exampleCommunity = communities.find((c) => c.id === "amarillo65") || EXAMPLE_COMMUNITY;
-  const exampleCourse = courses.find((c) => c.id === "asia") || EXAMPLE_COURSE;
-
   const login = async (u) => {
     if (CLOUD && u.cloudUser) {
       // Primero se cargan los datos compartidos y recién entonces se crea
@@ -3092,7 +2994,7 @@ export default function App() {
       // pisar los datos de la nube con los valores de ejemplo.
       setReady(false);
       const base = await loadData();
-      setMe(base.find((p) => p.id === u.cloudUser.id) || ensureCloudPlayer(u.cloudUser, base, setPlayers, setCommunities));
+      setMe(base.find((p) => p.id === u.cloudUser.id) || ensureCloudPlayer(u.cloudUser, base, setPlayers));
       setReady(true);
       return;
     }
@@ -3212,13 +3114,7 @@ export default function App() {
               <div style={{ color: C.lime, marginTop: 10, maxWidth: 540, fontSize: 15.5 }}>Calcula resultados del modo <b>Machetero</b>: concursos por equipo y por evento, tokens, Carry Over y Bye — todo automático.</div>
               <div style={{ display: "flex", gap: 10, marginTop: 20, flexWrap: "wrap" }}>
                 <Btn variant="gold" onClick={() => setView("round")}>Iniciar una ronda</Btn>
-                <Btn variant="ghost" style={{ color: C.cream, borderColor: "rgba(246,241,227,.45)" }} onClick={() => {
-                  const ev = buildExampleEvent();
-                  const rules = { rulePct: exampleCommunity.rulePct, tokenValue: exampleCommunity.tokenValue, bet: exampleCommunity.bet, medal: exampleCommunity.medal, regla8: exampleCommunity.regla8, currency: exampleCommunity.currency };
-                  const results = computeEvent(JSON.parse(JSON.stringify(ev)), exampleCourse, rules);
-                  setRounds((r) => [{ ...ev, results }, ...r]);
-                  setView("player");
-                }}>Cargar ejemplo del documento</Btn>
+                <Btn variant="ghost" style={{ color: C.cream, borderColor: "rgba(246,241,227,.45)" }} onClick={() => setView("communities")}>Mis comunidades</Btn>
               </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14 }}>

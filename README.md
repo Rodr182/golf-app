@@ -24,12 +24,23 @@ npm run build   # deja el sitio final en frontend/dist/
 La carpeta `frontend/dist/` se puede subir tal cual a cualquier hosting
 estático (Vercel, Netlify, GitHub Pages, etc.).
 
-## Usuario de prueba
+## Primer uso
 
-- Email: `demo@golf.com` · Contraseña: `demo`
+La app arranca **sin datos de ejemplo**: cada persona crea su cuenta, arma su
+comunidad y desde ahí convoca eventos. Lo único precargado es el catálogo
+oficial de canchas (Golf Los Inkas y Asia Golf), que mantiene el
+administrador de la app.
 
-Incluye datos de ejemplo: la comunidad **Korn Ferry Boys** (25 jugadores) con
-una fecha jugada en Golf Los Inkas, y la cancha Asia Golf.
+Para empezar: crea tu cuenta → **Comunidades → + Nueva comunidad** → define
+las reglas → comparte el enlace de la app con tu grupo para que postulen.
+También puedes jugar sin comunidad desde **Iniciar Ronda → Ronda libre**.
+
+## Borrar todos los datos (volver a cero)
+
+La acción `Borrar datos de la app` (pestaña Actions en GitHub) vacía la tabla
+`collections` de Supabase; hay que escribir `BORRAR` para confirmar. No toca
+las cuentas de usuario ni la estructura de la base. Alternativa manual: en el
+SQL Editor de Supabase, `delete from public.collections;`
 
 ## Dos modos de funcionamiento
 
