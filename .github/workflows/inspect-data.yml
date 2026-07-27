@@ -1,0 +1,39 @@
+# Muestra qué hay guardado en la app (solo lectura, no modifica nada).
+name: Ver datos de la app
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inventario
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; echo ""; }
+
+          echo "== Colecciones y cuándo se escribieron =="
+          q "select key, updated_at, pg_column_size(value) as bytes from public.collections order by key;"
+
+          echo "== Cuántos elementos hay en cada una =="
+          q "select key, jsonb_array_length(value) as elementos from public.collections where jsonb_typeof(value)='array' order by key;"
+
+          echo "== Rondas guardadas (fecha y jugadores) =="
+          q "select r->>'date' as fecha, r->>'communityId' as comunidad, jsonb_array_length(r->'teams') as grupos from public.collections, jsonb_array_elements(value) r where key='gb_rounds_v2';"
+
+          echo "== Comunidades =="
+          q "select c->>'name' as nombre, jsonb_array_length(c->'members') as miembros from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
+
+          echo "== Jugadores registrados =="
+          q "select p->>'name' as nombre, p->>'email' as email from public.collections, jsonb_array_elements(value) p where key='gb_players_v2';"
+
+          echo "== Cuentas en Supabase Auth =="
+          q "select email, created_at from auth.users order by created_at;"
