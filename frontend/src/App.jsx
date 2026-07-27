@@ -415,15 +415,102 @@ function playerMoneyByCommunity(meId, rounds) {
   return Object.values(byComm);
 }
 
+/* ---- RANKING DE LA COMUNIDAD ----
+   Réplica del cálculo que el grupo llevaba en Excel (hoja "Normalizacion"):
+     NormML   = (ML   - mín) / (máx - mín)
+     NormPart = (%Part - mín) / (máx - mín)      %Part = fechas jugadas / fechas válidas
+     Ranking  = NormML * pesoML + NormPart * pesoPart      (50/50 por defecto)
+   Reglas acordadas: solo miembros (los invitados no acumulan) y solo fechas de
+   2 grupos o más — una fecha de un solo grupo no entra al ranking. */
+const RANK_DEFAULT = { wMoney: 50, wPart: 50 };
+const rankWeights = (community) => {
+  const r = community.rank || RANK_DEFAULT;
+  const a = Number.isFinite(+r.wMoney) ? +r.wMoney : 50;
+  const b = Number.isFinite(+r.wPart) ? +r.wPart : 50;
+  const s = a + b;
+  return s > 0 ? { wMoney: a / s, wPart: b / s, pctMoney: Math.round((a / s) * 100), pctPart: Math.round((b / s) * 100) }
+               : { wMoney: .5, wPart: .5, pctMoney: 50, pctPart: 50 };
+};
+/* Fechas que cuentan para el ranking: de la comunidad, no libres y con 2+ grupos */
+const rankingRounds = (communityId, rounds) =>
+  rounds.filter((r) => r.communityId === communityId && !r.results.simple && (r.teams || []).length >= 2);
+
+// Normalización min–max. Si todos empatan no hay rango: vale 1 para todos (no altera el orden).
+const minMax = (v, min, max) => (max === min ? 1 : (v - min) / (max - min));
+
+function communityRanking(community, rounds) {
+  const rds = rankingRounds(community.id, rounds);
+  const fechas = new Set(rds.map((r) => r.date)).size;
+  const members = new Set(community.members || []);
+  const agg = {};
+  rds.forEach((r) => {
+    r.results.rows.forEach((row) => {
+      if (row.guest || !members.has(row.id)) return; // invitados y ex-miembros fuera
+      const a = agg[row.id] || (agg[row.id] = { id: row.id, name: row.name, ml: 0, fechas: 0 });
+      a.ml += row.totalMoney; a.fechas++;
+    });
+  });
+  const list = Object.values(agg);
+  const sinFechas = (community.members || []).length - list.length;
+  if (!list.length) return { rows: [], fechas, sinFechas, weights: rankWeights(community) };
+
+  list.forEach((p) => (p.pctPart = fechas ? p.fechas / fechas : 0));
+  const mls = list.map((p) => p.ml), parts = list.map((p) => p.pctPart);
+  const minMl = Math.min(...mls), maxMl = Math.max(...mls);
+  const minPt = Math.min(...parts), maxPt = Math.max(...parts);
+  const w = rankWeights(community);
+  list.forEach((p) => {
+    p.normMl = minMax(p.ml, minMl, maxMl);
+    p.normPart = minMax(p.pctPart, minPt, maxPt);
+    p.score = p.normMl * w.wMoney + p.normPart * w.wPart;
+  });
+  // Las tres posiciones del tablero: ranking, money list y participación.
+  // Los empates comparten posición (1º, 1º, 3º), como en cualquier tabla.
+  const posBy = (key) => {
+    const ord = [...list].sort((a, b) => b[key] - a[key]);
+    const pos = {}; let last = null, lastPos = 0;
+    ord.forEach((p, i) => { if (last === null || p[key] !== last) { lastPos = i + 1; last = p[key]; } pos[p.id] = lastPos; });
+    return pos;
+  };
+  const pR = posBy("score"), pM = posBy("ml"), pP = posBy("fechas");
+  list.forEach((p) => { p.posRank = pR[p.id]; p.posMl = pM[p.id]; p.posPart = pP[p.id]; });
+  return { rows: list.sort((a, b) => b.score - a.score), fechas, sinFechas, weights: w };
+}
+
+/* ---- POZO DE LA COMUNIDAD (hoja "POZO" del Excel) ----
+   Base de cada fecha = lo que ganaron los ganadores ese día (suma de los positivos).
+   Sobre esa base se aplican los conceptos configurados (Mesa 35% / Prop 5% / Caja 10%).
+   A diferencia del ranking, aquí sí entran todas las fechas: hubo plata real. */
+const POZO_DEFAULT = [{ name: "Mesa", pct: 35 }, { name: "Prop", pct: 5 }, { name: "Caja", pct: 10 }];
+const pozoConcepts = (community) => {
+  const p = community.pozo;
+  return Array.isArray(p) && p.length ? p.map((c) => ({ name: c.name || "—", pct: +c.pct || 0 })) : POZO_DEFAULT;
+};
+function communityPozo(community, rounds) {
+  const concepts = pozoConcepts(community);
+  const rows = rounds
+    .filter((r) => r.communityId === community.id && !r.results.simple)
+    .map((r) => {
+      const base = r.results.rows.reduce((s, x) => s + (x.totalMoney > 0 ? x.totalMoney : 0), 0);
+      return { id: r.id, date: r.date, name: r.eventName || "Fecha", grupos: (r.teams || []).length, base, amounts: concepts.map((c) => base * c.pct / 100) };
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+  const totals = concepts.map((_, i) => rows.reduce((s, r) => s + r.amounts[i], 0));
+  return { concepts, rows, totals, baseTotal: rows.reduce((s, r) => s + r.base, 0) };
+}
+
 /* Estadísticas de scoring del jugador (vs par) sobre todas sus rondas */
 const SCORE_CATS = [
-  ["eagle", "Águila o mejor", "#1f7a4d"], ["birdie", "Birdie", "#3fa46a"],
+  ["ace", "Hoyo en uno", "#7b5ea7"], ["albatros", "Albatros", "#14683f"],
+  ["eagle", "Eagle", "#1f7a4d"], ["birdie", "Birdie", "#3fa46a"],
   ["par", "Par", "#0f3d2e"], ["bogey", "Bogey", "#d4a843"],
   ["double", "Doble bogey", "#ca8a3a"], ["triple", "Más de doble", "#b4452f"],
 ];
 function scoreCat(gross, par) {
   const d = gross - par;
-  if (d <= -2) return "eagle";
+  if (gross === 1) return "ace";
+  if (d <= -3) return "albatros";
+  if (d === -2) return "eagle";
   if (d === -1) return "birdie";
   if (d === 0) return "par";
   if (d === 1) return "bogey";
@@ -431,7 +518,7 @@ function scoreCat(gross, par) {
   return "triple";
 }
 function playerScoreStats(meId, rounds, courses) {
-  const counts = { eagle: 0, birdie: 0, par: 0, bogey: 0, double: 0, triple: 0 };
+  const counts = { ace: 0, albatros: 0, eagle: 0, birdie: 0, par: 0, bogey: 0, double: 0, triple: 0 };
   let holes = 0;
   rounds.forEach((r) => {
     const course = courses.find((c) => c.id === r.courseId);
@@ -1763,8 +1850,10 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
     if (!filled) return null;
     const grossTotal = mp.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
     const hcp = parseInt(mp.hcp) || 0;
-    return { grossTotal, netTotal: grossTotal - hcp };
+    return { grossTotal, netTotal: grossTotal - hcp, date: r.date, hcp, courseName: course.name };
   }).filter(Boolean);
+  // Evolución por fecha, de la más antigua a la más reciente
+  const trend = [...myCards].reverse();
   const avg = (arr) => (arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(1);
 
   return (
@@ -1856,7 +1945,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
       <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Estadísticas de juego</div>
       {stats.holes === 0 ? (
         <Card style={{ padding: 22, color: "#7a8780", marginBottom: 22 }}>
-          Tus estadísticas (águilas, birdies, pares, bogeys, dobles, +dobles) aparecerán aquí cuando juegues una ronda en la que estés incluido.
+          Tus estadísticas (hoyos en uno, albatros, eagles, birdies, pares, bogeys, dobles, +dobles) aparecerán aquí cuando juegues una ronda en la que estés incluido.
         </Card>
       ) : (
         <Card style={{ padding: 18, marginBottom: 22 }}>
@@ -1894,6 +1983,30 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
               </Card>
             ))}
           </div>
+          {/* Evolución fecha por fecha: barra gross con la porción neta marcada */}
+          {trend.length > 1 && (
+            <Card style={{ padding: 18, marginBottom: 22, overflowX: "auto" }}>
+              <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 14 }}>Ronda por ronda · barra completa = gross, tramo oscuro = neto</div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 10, minHeight: 130 }}>
+                {trend.map((c, i) => {
+                  const max = Math.max(...trend.map((x) => x.grossTotal));
+                  const h = Math.round((c.grossTotal / max) * 110);
+                  const hn = Math.round((c.netTotal / c.grossTotal) * h);
+                  return (
+                    <div key={i} style={{ textAlign: "center", minWidth: 48 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: C.green, marginBottom: 3 }}>{c.grossTotal}</div>
+                      <div title={`${c.date} · ${c.courseName} · gross ${c.grossTotal} · neto ${c.netTotal}`}
+                        style={{ height: h, background: "rgba(63,164,106,.35)", borderRadius: "6px 6px 0 0", display: "flex", alignItems: "flex-end", overflow: "hidden" }}>
+                        <div style={{ width: "100%", height: hn, background: C.green }} />
+                      </div>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: C.gold }}>{c.netTotal}</div>
+                      <div style={{ fontSize: 10.5, color: "#9aa69e" }}>{(c.date || "").slice(5)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
         </>
       )}
 
@@ -2408,7 +2521,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         </div>
       );
     }
-    const threeGroups = groups.filter((x) => x.playerIds.length === 3);
+    // El prestado solo existe para Grupos vs. Grupos: con un único grupo ese
+    // concurso no se juega y no hay de dónde prestar, así que no se pregunta.
+    const threeGroups = groups.length > 1 ? groups.filter((x) => x.playerIds.length === 3) : [];
     const grossTotal = (pid) => {
       for (const gr of groups) { const s = gr.scores[pid]; if (s && s.length) return s.reduce((sum, v) => sum + (parseInt(v) || 0), 0); }
       return null;
@@ -2545,7 +2660,14 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
     multiStroke: !!community.multiStroke,
   });
   const [map, setMap] = useState(community.regla8Map || {});
+  const [rk, setRk] = useState({ wMoney: rankWeights(community).pctMoney, wPart: rankWeights(community).pctPart });
+  const [pz, setPz] = useState(pozoConcepts(community));
   const upd = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  // Los dos pesos del ranking siempre suman 100: al mover uno se ajusta el otro.
+  const setPeso = (campo) => (e) => {
+    const v = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+    setRk(campo === "wMoney" ? { wMoney: v, wPart: 100 - v } : { wMoney: 100 - v, wPart: v });
+  };
   const toggleHole = (courseId, h) => setMap((m) => {
     const cur = m[courseId] || [];
     const next = cur.includes(h) ? cur.filter((x) => x !== h) : [...cur, h].sort((a, b) => a - b);
@@ -2608,6 +2730,35 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
           <div style={{ fontSize: 11.5, color: "#9aa69e" }}>Los hoyos par 3 aparecen sombreados como sugerencia.</div>
         </div>
       )}
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, letterSpacing: .4, textTransform: "uppercase", marginBottom: 8 }}>Ranking</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="% Money list"><input style={inputStyle} type="number" inputMode="numeric" value={rk.wMoney} onChange={setPeso("wMoney")} /></Field>
+        <Field label="% Participación"><input style={inputStyle} type="number" inputMode="numeric" value={rk.wPart} onChange={setPeso("wPart")} /></Field>
+      </div>
+      <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 14, marginTop: -6, lineHeight: 1.6 }}>
+        Los dos pesos suman siempre 100. Con <b>{rk.wMoney}/{rk.wPart}</b>{" "}
+        {rk.wMoney === rk.wPart ? "pesa igual ganar plata que estar presente."
+          : rk.wMoney > rk.wPart ? "manda la money list; la asistencia solo desempata."
+          : "manda la asistencia; la plata pesa menos."}{" "}
+        Al ranking solo entran las fechas de 2 grupos o más.
+      </div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, letterSpacing: .4, textTransform: "uppercase", marginBottom: 8 }}>Pozo (solo administradores)</div>
+      <div style={{ padding: 12, background: C.cream, borderRadius: 12, marginBottom: 14 }}>
+        <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 10 }}>
+          Porcentajes que se calculan sobre lo ganado en cada fecha:
+        </div>
+        {pz.map((c, i) => (
+          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 90px 38px", gap: 8, alignItems: "center", marginBottom: 8 }}>
+            <input style={inputStyle} value={c.name} placeholder="Concepto"
+              onChange={(e) => setPz(pz.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+            <input style={inputStyle} type="number" inputMode="numeric" value={c.pct}
+              onChange={(e) => setPz(pz.map((x, j) => (j === i ? { ...x, pct: e.target.value } : x)))} />
+            <button onClick={() => setPz(pz.filter((_, j) => j !== i))} title={`Quitar ${c.name}`} style={{
+              border: "none", cursor: "pointer", width: 34, height: 34, borderRadius: 9, background: "rgba(180,69,47,.12)", color: C.red, fontWeight: 800 }}>×</button>
+          </div>
+        ))}
+        <Btn variant="ghost" onClick={() => setPz([...pz, { name: "", pct: 0 }])}>+ Agregar concepto</Btn>
+      </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
         <Btn variant="ghost" onClick={onCancel}>Cancelar</Btn>
         <Btn onClick={() => onSave({
@@ -2616,6 +2767,8 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
           bet: { front: +f.front || 0, back: +f.back || 0, match: +f.match || 0, bye: +f.bye || 0 },
           medal: { tokens: +f.medalTokens || 0, rulePct: +f.medalPct || 100 },
           regla8: !!f.regla8, regla8Map: map, multiStroke: !!f.multiStroke,
+          rank: { wMoney: +rk.wMoney || 0, wPart: +rk.wPart || 0 },
+          pozo: pz.filter((c) => (c.name || "").trim()).map((c) => ({ name: c.name.trim(), pct: +c.pct || 0 })),
         })}>Guardar reglas</Btn>
       </div>
     </Card>
@@ -2629,9 +2782,12 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
   const [creatingEvent, setCreatingEvent] = useState(false);
   const [editingRules, setEditingRules] = useState(false);
   const [evForm, setEvForm] = useState({ name: "", courseId: courses[0]?.id, date: new Date().toISOString().slice(0, 10) });
+  const [rankSort, setRankSort] = useState("rank");
   const cur = community.currency;
   const commRounds = rounds.filter((r) => r.communityId === community.id);
   const list = communityMoneyList(community.id, rounds);
+  const ranking = communityRanking(community, rounds);
+  const pozo = communityPozo(community, rounds);
   const commEvents = events.filter((e) => e.communityId === community.id);
   const iAmAdmin = isAdmin(community, me.id);
   const isOwner = community.admin === me.id;
@@ -2711,6 +2867,8 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, background: C.creamDk, borderRadius: 12, padding: 4, width: "fit-content", flexWrap: "wrap" }}>
         <Tab id="jugadores" label={`Jugadores (${community.members.length})${iAmAdmin && applicants.length ? " · " + applicants.length + "📩" : ""}`} />
         <Tab id="moneylist" label="Money List" />
+        <Tab id="ranking" label="Ranking" />
+        {iAmAdmin && <Tab id="pozo" label="Pozo" />}
         <Tab id="eventos" label={`Eventos (${commEvents.length})`} />
         <Tab id="resultados" label={`Resultados (${commRounds.length})`} />
       </div>
@@ -2813,6 +2971,117 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
             ))}
           </Card>
         )
+      )}
+
+      {/* RANKING: money list + participación, como en el Excel del grupo */}
+      {tab === "ranking" && (
+        ranking.rows.length === 0 ? (
+          <Card style={{ padding: 22, color: "#7a8780" }}>
+            <b style={{ color: C.green }}>Todavía no hay ranking.</b>
+            <div style={{ fontSize: 13.5, marginTop: 6, lineHeight: 1.6 }}>
+              El ranking se arma con las fechas de <b>2 grupos o más</b>. Las fechas de un solo grupo entran a la
+              Money List pero no al ranking.
+            </div>
+          </Card>
+        ) : (() => {
+          const key = rankSort === "ml" ? "ml" : rankSort === "part" ? "fechas" : "score";
+          const posKey = rankSort === "ml" ? "posMl" : rankSort === "part" ? "posPart" : "posRank";
+          const filas = [...ranking.rows].sort((a, b) => b[key] - a[key] || b.score - a.score);
+          const cols = "26px 1.5fr .9fr .8fr 1fr";
+          return (
+            <div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+                {[["rank", "Por ranking"], ["ml", "Por money list"], ["part", "Por participación"]].map(([k, l]) => (
+                  <button key={k} onClick={() => setRankSort(k)} style={{
+                    border: `1.5px solid ${rankSort === k ? C.green : C.line}`, cursor: "pointer", padding: "6px 13px", borderRadius: 999,
+                    fontFamily: "'Spline Sans',sans-serif", fontWeight: 700, fontSize: 12.5,
+                    background: rankSort === k ? C.green : "transparent", color: rankSort === k ? C.cream : C.green }}>{l}</button>
+                ))}
+                {iAmAdmin && <Btn variant="ghost" onClick={() => setEditingRules(true)} style={{ marginLeft: "auto" }}>⚙️ Pesos</Btn>}
+              </div>
+              <Card style={{ overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: cols, background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
+                  <div>#</div><div>Jugador</div>
+                  <div style={{ textAlign: "right" }}>Money list</div>
+                  <div style={{ textAlign: "center" }}>Fechas</div>
+                  <div style={{ textAlign: "right" }}>Puntos</div>
+                </div>
+                {filas.map((p, i) => (
+                  <div key={p.id} style={{ display: "grid", gridTemplateColumns: cols, padding: "11px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+                    <div style={{ fontWeight: 800, color: p[posKey] === 1 ? C.gold : "#9aa69e", fontFamily: "'Fraunces'" }}>{p[posKey]}</div>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{p.name}</div>
+                      <div style={{ fontSize: 11.5, color: "#9aa69e" }}>ML {p.posMl}º · Part {p.posPart}º</div>
+                    </div>
+                    <div style={{ textAlign: "right", fontSize: 13, color: p.ml >= 0 ? C.green : C.red }}>{money(p.ml, cur)}</div>
+                    <div style={{ textAlign: "center", fontSize: 13 }}>
+                      {p.fechas}<span style={{ color: "#9aa69e" }}>/{ranking.fechas}</span>
+                      <div style={{ fontSize: 11, color: "#9aa69e" }}>{Math.round(p.pctPart * 100)}%</div>
+                    </div>
+                    <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 17, color: C.green }}>{(p.score * 100).toFixed(1)}</div>
+                  </div>
+                ))}
+              </Card>
+              <Card style={{ padding: 16, marginTop: 12, background: C.cream }}>
+                <div style={{ fontSize: 13, color: "#5c6b63", lineHeight: 1.65 }}>
+                  <b style={{ color: C.green }}>Puntos = {ranking.weights.pctMoney}% money list + {ranking.weights.pctPart}% participación.</b>{" "}
+                  Cada componente se normaliza entre el mejor y el peor de la tabla (0 a 100), así que premia ganar
+                  plata y también estar presente.
+                  <div style={{ marginTop: 6 }}>
+                    Se cuentan <b>{ranking.fechas}</b> {ranking.fechas === 1 ? "fecha válida" : "fechas válidas"} (mínimo 2 grupos).
+                    Los invitados no acumulan{ranking.sinFechas > 0 ? <> · <b>{ranking.sinFechas}</b> {ranking.sinFechas === 1 ? "miembro aún sin fechas" : "miembros aún sin fechas"}</> : null}.
+                  </div>
+                  {commRounds.length > ranking.fechas && (
+                    <div style={{ marginTop: 6, color: "#7a8780" }}>
+                      Nota: la Money List incluye todas las fechas jugadas, por eso puede no coincidir con la columna de aquí.
+                    </div>
+                  )}
+                </div>
+              </Card>
+            </div>
+          );
+        })()
+      )}
+
+      {/* POZO: seguimiento interno, solo para administradores */}
+      {tab === "pozo" && iAmAdmin && (
+        pozo.rows.length === 0 ? <Card style={{ padding: 22, color: "#7a8780" }}>Todavía no hay fechas jugadas en esta comunidad.</Card> : (() => {
+          const cols = `1.1fr .8fr ${pozo.concepts.map(() => "1fr").join(" ")}`;
+          return (
+            <div>
+              <Card style={{ padding: 14, marginBottom: 12, background: C.cream, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ fontSize: 13, color: "#5c6b63" }}>🔒 Solo lo ven los administradores de {community.name}.</div>
+                <Btn variant="ghost" onClick={() => setEditingRules(true)}>⚙️ Conceptos</Btn>
+              </Card>
+              <Card style={{ overflowX: "auto" }}>
+                <div style={{ minWidth: 340 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: cols, background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
+                    <div>Fecha</div><div style={{ textAlign: "right" }}>Ganado</div>
+                    {pozo.concepts.map((c) => <div key={c.name} style={{ textAlign: "right" }}>{c.name} {c.pct}%</div>)}
+                  </div>
+                  {pozo.rows.map((r, i) => (
+                    <div key={r.id} style={{ display: "grid", gridTemplateColumns: cols, padding: "11px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>
+                        <div style={{ fontSize: 11.5, color: "#9aa69e" }}>{r.date} · {r.grupos} {r.grupos === 1 ? "grupo" : "grupos"}</div>
+                      </div>
+                      <div style={{ textAlign: "right", fontWeight: 700, fontSize: 13.5 }}>{cur}{r.base.toFixed(2)}</div>
+                      {r.amounts.map((a, j) => <div key={j} style={{ textAlign: "right", fontSize: 13.5, color: C.green }}>{cur}{a.toFixed(2)}</div>)}
+                    </div>
+                  ))}
+                  <div style={{ display: "grid", gridTemplateColumns: cols, padding: "13px 14px", alignItems: "center", borderTop: `2px solid ${C.green}`, background: C.creamDk }}>
+                    <div style={{ fontWeight: 800, color: C.green }}>Acumulado</div>
+                    <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'" }}>{cur}{pozo.baseTotal.toFixed(2)}</div>
+                    {pozo.totals.map((t, j) => <div key={j} style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 15, color: C.green }}>{cur}{t.toFixed(2)}</div>)}
+                  </div>
+                </div>
+              </Card>
+              <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 10, lineHeight: 1.6 }}>
+                «Ganado» es la suma de lo que ganaron los ganadores de esa fecha; sobre ese monto se calcula cada concepto.
+              </div>
+            </div>
+          );
+        })()
       )}
 
       {tab === "eventos" && (

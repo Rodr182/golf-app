@@ -35,6 +35,24 @@ Para empezar: crea tu cuenta → **Comunidades → + Nueva comunidad** → defin
 las reglas → comparte el enlace de la app con tu grupo para que postulen.
 También puedes jugar sin comunidad desde **Iniciar Ronda → Ronda libre**.
 
+## Ranking y pozo de la comunidad
+
+Dentro de cada comunidad, además de la Money List:
+
+- **Ranking**: combina la money list con la asistencia. Cada componente se
+  normaliza entre el mejor y el peor de la tabla (0 a 100) y se pondera; por
+  defecto 50% y 50%, editable por los administradores en **⚙️ Reglas**. Solo
+  entran los miembros (no los invitados) y solo las fechas de **2 grupos o
+  más** — una fecha de un grupo suma a la Money List pero no al ranking.
+  La tabla se puede ordenar por ranking, por money list o por participación.
+- **Pozo** (solo administradores): por fecha, toma lo que ganaron los
+  ganadores de ese día y aplica los conceptos configurados —Mesa 35%, Prop 5%
+  y Caja 10% por defecto, con nombres y porcentajes editables— más el
+  acumulado de la temporada.
+
+Ambos cálculos replican las hojas `Normalizacion` y `POZO` de la planilla que
+el grupo llevaba en Excel.
+
 ## Borrar todos los datos (volver a cero)
 
 La acción `Borrar datos de la app` (pestaña Actions en GitHub) vacía la tabla
