@@ -58,5 +58,5 @@ jobs:
           q "insert into public.collections (key, value, updated_at) values ('gb_epoch', to_jsonb(extract(epoch from now())::bigint), now()) on conflict (key) do update set value = excluded.value, updated_at = now();"
 
           echo "== Después =="
-          q "select key, coalesce(jsonb_array_length(value),0) as elementos from public.collections order by key;"
+          q "select key, case when jsonb_typeof(value)='array' then jsonb_array_length(value) else null end as elementos, updated_at from public.collections order by key;"
           echo "LISTO. Las cuentas de usuario no se tocaron."
