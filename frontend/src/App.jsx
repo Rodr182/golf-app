@@ -520,7 +520,22 @@ function mergeCommunities(localList, remoteList) {
   (remoteList || []).forEach((rc) => { if (rc && !seen.has(rc.id)) out.push(rc); });
   return out;
 }
-const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergeById, gb_comm_v2: mergeCommunities };
+// Jugadores: unión por id, pero si el registro cambió (perfil editado) gana la
+// versión con _rev mayor, para que la edición llegue a todos los celulares.
+function mergePlayers(localList, remoteList) {
+  const rIdx = {};
+  (remoteList || []).forEach((p) => { if (p && p.id != null) rIdx[p.id] = p; });
+  const seen = new Set();
+  const out = (localList || []).map((lp) => {
+    if (!lp || lp.id == null) return lp;
+    seen.add(lp.id);
+    const rp = rIdx[lp.id];
+    return rp && (rp._rev || 0) > (lp._rev || 0) ? rp : lp;
+  });
+  (remoteList || []).forEach((rp) => { if (rp && rp.id != null && !seen.has(rp.id)) out.push(rp); });
+  return out;
+}
+const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergePlayers, gb_comm_v2: mergeCommunities };
 
 // Persistencia en Supabase: tabla "collections" (key → value jsonb).
 // Las escrituras se agrupan (debounce) y se fusionan con lo último de la nube.
@@ -562,6 +577,7 @@ function ensureCloudPlayer(user, players, setPlayers) {
     last: meta.last || "",
     email: user.email,
     birth: meta.birth || "",
+    ...(meta.hcp == null ? {} : { hcp: meta.hcp }),
     plan: "free",
     communities: [],
   };
@@ -639,7 +655,7 @@ const inputStyle = { width: "100%", boxSizing: "border-box", padding: "11px 13px
 /* ---------------- AUTH ---------------- */
 function Auth({ onAuth, players, setPlayers }) {
   const [mode, setMode] = useState("login");
-  const [f, setF] = useState({ name: "", last: "", email: "", birth: "", pass: "", pass2: "" });
+  const [f, setF] = useState({ name: "", last: "", email: "", birth: "", pass: "", pass2: "", hcp: "" });
   const [err, setErr] = useState("");
   const upd = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -656,7 +672,7 @@ function Auth({ onAuth, players, setPlayers }) {
           if (!f.name || !f.email || !f.pass) { setErr("Completa los campos obligatorios."); return; }
           if (f.pass !== f.pass2) { setErr("Las contraseñas no coinciden."); return; }
           if (f.pass.length < 6) { setErr("La contraseña debe tener al menos 6 caracteres."); return; }
-          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.pass, options: { data: { name: f.name, last: f.last, birth: f.birth } } });
+          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.pass, options: { data: { name: f.name, last: f.last, birth: f.birth, hcp: f.hcp === "" ? null : parseInt(f.hcp) } } });
           if (error) { setErr(/already|registered/i.test(error.message) ? "Ese email ya está registrado." : "No se pudo crear la cuenta: " + error.message); return; }
           if (!data.session) { setErr("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión."); return; }
           onAuth({ cloudUser: data.user });
@@ -673,7 +689,7 @@ function Auth({ onAuth, players, setPlayers }) {
       if (!f.name || !f.email || !f.pass) { setErr("Completa los campos obligatorios."); return; }
       if (f.pass !== f.pass2) { setErr("Las contraseñas no coinciden."); return; }
       if (players.some((p) => p.email && p.email.toLowerCase() === f.email.toLowerCase())) { setErr("Ese email ya está registrado."); return; }
-      const u = { id: "U" + Date.now(), name: f.name, last: f.last, email: f.email, birth: f.birth, pass: f.pass, communities: [] };
+      const u = { id: "U" + Date.now(), name: f.name, last: f.last, email: f.email, birth: f.birth, pass: f.pass, communities: [], ...(f.hcp === "" ? {} : { hcp: parseInt(f.hcp) }) };
       const next = [...players, u]; setPlayers(next); onAuth(u);
     }
   };
@@ -705,7 +721,12 @@ function Auth({ onAuth, players, setPlayers }) {
             </div>
           )}
           <Field label="Email*"><input style={inputStyle} type="email" value={f.email} onChange={upd("email")} placeholder="tu@correo.com" /></Field>
-          {mode === "signup" && <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={upd("birth")} /></Field>}
+          {mode === "signup" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={upd("birth")} /></Field>
+              <Field label="Hándicap"><input style={inputStyle} type="number" inputMode="numeric" value={f.hcp} onChange={upd("hcp")} placeholder="ej. 12" /></Field>
+            </div>
+          )}
           <Field label="Contraseña*"><input style={inputStyle} type="password" value={f.pass} onChange={upd("pass")} /></Field>
           {mode === "signup" && <Field label="Repetir contraseña*"><input style={inputStyle} type="password" value={f.pass2} onChange={upd("pass2")} /></Field>}
           {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
@@ -1682,8 +1703,27 @@ function Communities({ communities, me, onOpen, onCreate }) {
 }
 
 /* ---------------- PERFIL / ESTADÍSTICAS ---------------- */
-function PlayerView({ me, rounds, communities, players, courses: coursesProp }) {
+function PlayerView({ me, rounds, communities, players, courses: coursesProp, onSaveProfile, onChangePassword }) {
   const [openCardIdx, setOpenCardIdx] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [f, setF] = useState({ name: me.name || "", last: me.last || "", birth: me.birth || "", hcp: me.hcp ?? "" });
+  const [msg, setMsg] = useState("");
+  const [pw, setPw] = useState({ a: "", b: "" });
+  const [pwMsg, setPwMsg] = useState("");
+  const openEdit = () => { setF({ name: me.name || "", last: me.last || "", birth: me.birth || "", hcp: me.hcp ?? "" }); setMsg(""); setEditing(true); };
+  const save = async () => {
+    if (!f.name.trim()) { setMsg("El nombre no puede quedar vacío."); return; }
+    await onSaveProfile({ name: f.name.trim(), last: f.last.trim(), birth: f.birth, hcp: f.hcp === "" ? undefined : parseInt(f.hcp) });
+    setEditing(false);
+  };
+  const savePassword = async () => {
+    setPwMsg("");
+    if (pw.a.length < 6) { setPwMsg("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (pw.a !== pw.b) { setPwMsg("Las contraseñas no coinciden."); return; }
+    const err = await onChangePassword(pw.a);
+    setPwMsg(err || "✓ Contraseña actualizada.");
+    if (!err) setPw({ a: "", b: "" });
+  };
   const byComm = playerMoneyByCommunity(me.id, rounds);
   const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id));
   const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
@@ -1709,12 +1749,55 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp }) 
 
   return (
     <div>
-      <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green, marginBottom: 14 }}>Mi perfil</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green }}>Mi perfil</div>
+        {!editing && <Btn variant="ghost" onClick={openEdit}>✏️ Editar mis datos</Btn>}
+      </div>
+
+      {editing && (
+        <Card style={{ padding: 22, marginBottom: 18, border: `1.5px solid ${C.gold}` }}>
+          <div style={{ fontWeight: 700, fontSize: 16, color: C.green, marginBottom: 14 }}>Editar mis datos</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Nombre*"><input style={inputStyle} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+            <Field label="Apellido"><input style={inputStyle} value={f.last} onChange={(e) => setF({ ...f, last: e.target.value })} /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={(e) => setF({ ...f, birth: e.target.value })} /></Field>
+            <Field label="Hándicap actual"><input style={inputStyle} type="number" inputMode="numeric" value={f.hcp} onChange={(e) => setF({ ...f, hcp: e.target.value })} placeholder="ej. 12" /></Field>
+          </div>
+          <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: -4, marginBottom: 12 }}>
+            Tu hándicap se usa como valor inicial cuando te suman a un grupo; el anotador puede ajustarlo el día de la ronda.
+          </div>
+          <Field label="Email"><input style={{ ...inputStyle, background: C.cream, color: "#7a8780" }} value={me.email || ""} disabled /></Field>
+          {msg && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 10 }}>{msg}</div>}
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <Btn variant="ghost" onClick={() => setEditing(false)}>Cancelar</Btn>
+            <Btn onClick={save}>Guardar cambios</Btn>
+          </div>
+
+          {onChangePassword && (
+            <div style={{ borderTop: `1px solid ${C.line}`, marginTop: 18, paddingTop: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.green, marginBottom: 10 }}>Cambiar contraseña</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="Nueva contraseña"><input style={inputStyle} type="password" value={pw.a} onChange={(e) => setPw({ ...pw, a: e.target.value })} /></Field>
+                <Field label="Repetir"><input style={inputStyle} type="password" value={pw.b} onChange={(e) => setPw({ ...pw, b: e.target.value })} /></Field>
+              </div>
+              {pwMsg && <div style={{ color: pwMsg.startsWith("✓") ? C.green : C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 10 }}>{pwMsg}</div>}
+              <Btn variant="ghost" disabled={!pw.a || !pw.b} onClick={savePassword}>Actualizar contraseña</Btn>
+            </div>
+          )}
+        </Card>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 22 }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Jugador</div>
           <div style={{ fontFamily: "'Fraunces'", fontSize: 22, fontWeight: 600, marginTop: 4 }}>{me.name} {me.last}</div>
           <div style={{ color: "#7a8780", fontSize: 13.5, marginTop: 2 }}>{me.email}</div>
+          <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Chip tone="green">hcp {me.hcp ?? "—"}</Chip>
+            {me.birth && <Chip tone="neutral">{me.birth}</Chip>}
+          </div>
         </Card>
         <Card style={{ padding: 18 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Rondas jugadas</div>
@@ -2971,7 +3054,7 @@ export default function App() {
         const map = {}; data.forEach((r) => (map[r.key] = r.value));
         if (map.gb_events_v1) setEvents((prev) => stable(prev, mergeEvents(prev, map.gb_events_v1)));
         if (map.gb_rounds_v2) setRounds((prev) => stable(prev, mergeById(prev, map.gb_rounds_v2)));
-        if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeById(prev, map.gb_players_v2)));
+        if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergePlayers(prev, map.gb_players_v2)));
         if (map.gb_comm_v2) setCommunities((prev) => stable(prev, mergeCommunities(prev, map.gb_comm_v2)));
       } catch {}
     };
@@ -2986,6 +3069,21 @@ export default function App() {
   useEffect(() => { if (canWrite) store.set("gb_courses_v2", courses); }, [courses, canWrite]);
   useEffect(() => { if (canWrite) store.set("gb_rounds_v2", rounds); }, [rounds, canWrite]);
   useEffect(() => { if (canWrite) store.set("gb_events_v1", events); }, [events, canWrite]);
+
+  // Edición del propio perfil: actualiza el registro del jugador (con _rev
+  // para que la fusión lo propague a los demás celulares).
+  const saveProfile = async (patch) => {
+    const clean = { ...patch };
+    if (clean.hcp === undefined || Number.isNaN(clean.hcp)) delete clean.hcp;
+    const updated = { ...me, ...clean, _rev: (me._rev || 0) + 1 };
+    setMe(updated);
+    setPlayers((prev) => (prev.some((p) => p.id === updated.id) ? prev.map((p) => (p.id === updated.id ? updated : p)) : [...prev, updated]));
+    if (CLOUD) { try { await sb.auth.updateUser({ data: { name: updated.name, last: updated.last, birth: updated.birth } }); } catch {} }
+  };
+  const changePassword = CLOUD ? async (password) => {
+    const { error } = await sb.auth.updateUser({ password });
+    return error ? "No se pudo actualizar: " + error.message : "";
+  } : null;
 
   const login = async (u) => {
     if (CLOUD && u.cloudUser) {
@@ -3136,7 +3234,7 @@ export default function App() {
 
         {view === "subscription" && <SubscriptionView me={me} onSetPlan={setPlan} myOwnedCommunities={myOwnedCommunities} onToggleCommunityPro={toggleCommunityPro} />}
 
-        {view === "player" && <PlayerView me={me} rounds={rounds} communities={communities} players={players} courses={courses} />}
+        {view === "player" && <PlayerView me={me} rounds={rounds} communities={communities} players={players} courses={courses} onSaveProfile={saveProfile} onChangePassword={changePassword} />}
 
         {view === "courses" && <CoursesView courses={courses} setCourses={setCourses} rounds={rounds} canManage={isAppAdmin(me)} />}
 
