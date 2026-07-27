@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 
@@ -520,9 +520,9 @@ function mergeCommunities(localList, remoteList) {
   (remoteList || []).forEach((rc) => { if (rc && !seen.has(rc.id)) out.push(rc); });
   return out;
 }
-// Jugadores: unión por id, pero si el registro cambió (perfil editado) gana la
-// versión con _rev mayor, para que la edición llegue a todos los celulares.
-function mergePlayers(localList, remoteList) {
+// Listas con id: unión, y si un elemento cambió (perfil editado, cancha
+// corregida) gana la versión con _rev mayor, para que llegue a todos.
+function mergeByIdRev(localList, remoteList) {
   const rIdx = {};
   (remoteList || []).forEach((p) => { if (p && p.id != null) rIdx[p.id] = p; });
   const seen = new Set();
@@ -535,7 +535,7 @@ function mergePlayers(localList, remoteList) {
   (remoteList || []).forEach((rp) => { if (rp && rp.id != null && !seen.has(rp.id)) out.push(rp); });
   return out;
 }
-const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergePlayers, gb_comm_v2: mergeCommunities };
+const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergeByIdRev, gb_comm_v2: mergeCommunities, gb_courses_v2: mergeByIdRev };
 
 /* ---- GUARDIÁN DE VERSIÓN DE DATOS ----
    Si desde el servidor se reinician los datos, una pestaña que quedó abierta
@@ -3037,7 +3037,7 @@ function CoursesView({ courses, setCourses, rounds, canManage }) {
   const [editing, setEditing] = useState(null);
   if (editing && canManage) {
     return <CourseEditor course={editing === "new" ? null : editing} onCancel={() => setEditing(null)}
-      onSave={(c) => { setCourses((prev) => (prev.some((x) => x.id === c.id) ? prev.map((x) => (x.id === c.id ? c : x)) : [...prev, c])); setEditing(null); }} />;
+      onSave={(c) => { setCourses((prev) => { const old = prev.find((x) => x.id === c.id); const nc = { ...c, _rev: ((old && old._rev) || 0) + 1 }; return old ? prev.map((x) => (x.id === c.id ? nc : x)) : [...prev, nc]; }); setEditing(null); }} />;
   }
   const usedCount = (id) => rounds.filter((r) => r.courseId === id).length;
   return (
@@ -3096,6 +3096,7 @@ export default function App() {
   const [openCommunity, setOpenCommunity] = useState(null);
   const [roundCommunity, setRoundCommunity] = useState(null);
   const [events, setEvents] = useState([]);
+  const savedSnap = useRef({}); // última versión subida/cargada de cada colección
   const [quickRound, setQuickRound] = useState(false); // "Iniciar Ronda": true = ronda casual sin evento
   const [eventJump, setEventJump] = useState(null);    // id de evento a abrir directamente en la comunidad
   const [playEventId, setPlayEventId] = useState(null); // evento abierto en modo anotación (Iniciar Ronda)
@@ -3111,11 +3112,17 @@ export default function App() {
     // rondas. Lo único sembrado es el catálogo oficial de canchas.
     if (CLOUD) dataEpoch = await readEpoch();
     const base = (await store.get("gb_players_v2", null)) || [];
-    setPlayers(base);
-    setCommunities(await store.get("gb_comm_v2", []));
-    setCourses(await store.get("gb_courses_v2", SEED_COURSES));
-    setRounds(await store.get("gb_rounds_v2", []));
-    setEvents(await store.get("gb_events_v1", []));
+    const comm = await store.get("gb_comm_v2", []);
+    const crs = await store.get("gb_courses_v2", SEED_COURSES);
+    const rnd = await store.get("gb_rounds_v2", []);
+    const evs = await store.get("gb_events_v1", []);
+    // Foto de lo cargado: mientras no cambie, este dispositivo no lo reescribe.
+    savedSnap.current = {
+      gb_players_v2: JSON.stringify(base), gb_comm_v2: JSON.stringify(comm),
+      gb_courses_v2: JSON.stringify(crs), gb_rounds_v2: JSON.stringify(rnd),
+      gb_events_v1: JSON.stringify(evs),
+    };
+    setPlayers(base); setCommunities(comm); setCourses(crs); setRounds(rnd); setEvents(evs);
     return base;
   };
 
@@ -3154,7 +3161,7 @@ export default function App() {
         const map = {}; data.forEach((r) => (map[r.key] = r.value));
         if (map.gb_events_v1) setEvents((prev) => stable(prev, mergeEvents(prev, map.gb_events_v1)));
         if (map.gb_rounds_v2) setRounds((prev) => stable(prev, mergeById(prev, map.gb_rounds_v2)));
-        if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergePlayers(prev, map.gb_players_v2)));
+        if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeByIdRev(prev, map.gb_players_v2)));
         if (map.gb_comm_v2) setCommunities((prev) => stable(prev, mergeCommunities(prev, map.gb_comm_v2)));
       } catch {}
     };
@@ -3164,11 +3171,21 @@ export default function App() {
 
   // Persistencia: en modo nube solo se escribe con sesión iniciada (me).
   const canWrite = ready && (!CLOUD || !!me);
-  useEffect(() => { if (canWrite) store.set("gb_players_v2", players); }, [players, canWrite]);
-  useEffect(() => { if (canWrite) store.set("gb_comm_v2", communities); }, [communities, canWrite]);
-  useEffect(() => { if (canWrite) store.set("gb_courses_v2", courses); }, [courses, canWrite]);
-  useEffect(() => { if (canWrite) store.set("gb_rounds_v2", rounds); }, [rounds, canWrite]);
-  useEffect(() => { if (canWrite) store.set("gb_events_v1", events); }, [events, canWrite]);
+  // Solo se sube lo que este dispositivo cambió: si una colección quedó igual
+  // a como se cargó, no se escribe. Evita que un celular con datos viejos
+  // reescriba (y pise) colecciones que ni siquiera tocó.
+  const persist = (key, value) => {
+    if (!canWrite) return;
+    const snap = JSON.stringify(value);
+    if (savedSnap.current[key] === snap) return;
+    savedSnap.current[key] = snap;
+    store.set(key, value);
+  };
+  useEffect(() => { persist("gb_players_v2", players); }, [players, canWrite]);
+  useEffect(() => { persist("gb_comm_v2", communities); }, [communities, canWrite]);
+  useEffect(() => { persist("gb_courses_v2", courses); }, [courses, canWrite]);
+  useEffect(() => { persist("gb_rounds_v2", rounds); }, [rounds, canWrite]);
+  useEffect(() => { persist("gb_events_v1", events); }, [events, canWrite]);
 
   // Edición del propio perfil: actualiza el registro del jugador (con _rev
   // para que la fusión lo propague a los demás celulares).
