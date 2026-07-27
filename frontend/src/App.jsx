@@ -2057,7 +2057,36 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   // ---- inscripción ----
   const toggleRegister = (pid) => {
     const has = registered.includes(pid);
-    updateEvent({ registered: has ? registered.filter((x) => x !== pid) : [...registered, pid] });
+    if (has) { unregister(pid); return; }
+    updateEvent({ registered: [...registered, pid] });
+  };
+  // Retira a un inscrito (miembro o invitado): lo saca de la lista, de su
+  // grupo si ya estaba asignado, y borra sus scores y su hándicap del día.
+  const unregister = (pid) => {
+    const name = resolveName(pid, players);
+    const enGrupo = groups.some((g) => g.playerIds.includes(pid));
+    const conScores = groups.some((g) => (g.scores[pid] || []).some((v) => v !== "" && v != null));
+    const aviso = conScores
+      ? `${name} ya tiene scores anotados. Si lo retiras se borrarán. ¿Continuar?`
+      : enGrupo ? `${name} ya está en un grupo. ¿Retirarlo del evento?` : null;
+    if (aviso && !window.confirm(aviso)) return;
+    const nuevosGrupos = groups.map((g) => {
+      if (!g.playerIds.includes(pid)) return g;
+      const hcps = { ...g.hcps }; delete hcps[pid];
+      const scores = { ...g.scores }; delete scores[pid];
+      return {
+        ...g,
+        playerIds: g.playerIds.filter((x) => x !== pid),
+        hcps, scores,
+        scorerId: g.scorerId === pid ? null : g.scorerId,
+        drawnOrder: null, drawnMode: null, // el sorteo de parejas queda sin efecto
+      };
+    });
+    updateEvent({
+      registered: registered.filter((x) => x !== pid),
+      guests: eventGuests.filter((g) => g.id !== pid),
+      groups: nuevosGrupos,
+    });
   };
 
   // ---- grupos ----
@@ -2138,8 +2167,23 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
             {registered.length === 0 && <div style={{ color: "#7a8780", fontSize: 13.5 }}>Nadie inscrito todavía. Usa "Avisar por WhatsApp" para convocar a la comunidad.</div>}
-            {registered.map((id) => <Chip key={id} tone="green">{resolveName(id, players)}</Chip>)}
+            {registered.map((id) => {
+              const esInvitado = guestIdSet.has(id);
+              const puedoRetirar = admin || id === me.id;
+              return (
+                <span key={id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: esInvitado ? C.gold : C.green, color: esInvitado ? "#3a2c0a" : C.lime, borderRadius: 999, padding: puedoRetirar ? "2px 4px 2px 10px" : "2px 10px", fontSize: 12, fontWeight: 700 }}>
+                  {esInvitado ? "🎟️ " : ""}{resolveName(id, players)}
+                  {puedoRetirar && (
+                    <button onClick={() => unregister(id)} title={`Retirar a ${resolveName(id, players)}`}
+                      style={{ border: "none", background: "rgba(0,0,0,.14)", color: "inherit", cursor: "pointer", borderRadius: 999, width: 18, height: 18, lineHeight: 1, fontSize: 12, fontWeight: 800, padding: 0 }}>✕</button>
+                  )}
+                </span>
+              );
+            })}
           </div>
+          {registered.length > 0 && (admin || registered.includes(me.id)) && (
+            <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>Toca la ✕ para retirar a alguien que ya no puede jugar.</div>
+          )}
         </Card>
         {admin && (
           <Card style={{ padding: 18, marginBottom: 14 }}>
@@ -2184,7 +2228,23 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                 <Btn variant="ghost" disabled={!guestName.trim()} onClick={addGuest}>+ Agregar</Btn>
               </div>
               <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>El invitado juega y entra en las cuentas del día, pero no cuenta para la money list acumulada de la comunidad.</div>
-              {eventGuests.length > 0 && <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 6 }}>Invitados: {eventGuests.map((g) => g.name).join(", ")} — asígnalos a un grupo abajo.</div>}
+              {registered.length > 0 && (
+                <div style={{ borderTop: `1px solid ${C.line}`, marginTop: 12, paddingTop: 10 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, textTransform: "uppercase", marginBottom: 8 }}>Inscritos ({registered.length}) — toca la ✕ para retirar</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {registered.map((id) => {
+                      const esInvitado = guestIdSet.has(id);
+                      return (
+                        <span key={id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: esInvitado ? C.gold : C.green, color: esInvitado ? "#3a2c0a" : C.lime, borderRadius: 999, padding: "2px 4px 2px 10px", fontSize: 12, fontWeight: 700 }}>
+                          {esInvitado ? "🎟️ " : ""}{resolveName(id, players)}
+                          <button onClick={() => unregister(id)} title={`Retirar a ${resolveName(id, players)}`}
+                            style={{ border: "none", background: "rgba(0,0,0,.14)", color: "inherit", cursor: "pointer", borderRadius: 999, width: 18, height: 18, lineHeight: 1, fontSize: 12, fontWeight: 800, padding: 0 }}>✕</button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </Card>
             {unassigned.length > 0 && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Sin asignar: {unassigned.map((id) => resolveName(id, players)).join(", ")}</div>}
             {groups.map((g) => (
