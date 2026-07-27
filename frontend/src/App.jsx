@@ -2603,6 +2603,15 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="gold" onClick={() => {
+              const url = window.location.origin + window.location.pathname;
+              const msg = `⛳ Te invito a *${community.name}* en GolfBuddy\n\n`
+                + `1️⃣ Entra a: ${url}\n`
+                + `2️⃣ Crea tu cuenta (nombre, correo y tu hándicap)\n`
+                + `3️⃣ Ve a *Comunidades* → *${community.name}* → *Postular*\n\n`
+                + `Te acepto y ya podrás inscribirte a las fechas 👊`;
+              window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank");
+            }}>📲 Invitar</Btn>
             {iAmAdmin && <Btn variant="ghost" onClick={() => setEditingRules(true)}>⚙️ Reglas</Btn>}
             <Btn onClick={onStartRound}>Ronda rápida</Btn>
           </div>
@@ -2646,6 +2655,15 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
             </Card>
           )}
 
+          {community.members.length <= 1 && applicants.length === 0 && (
+            <Card style={{ padding: 16, marginBottom: 12, background: C.cream }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Por ahora estás solo en la comunidad</div>
+              <div style={{ fontSize: 13.5, color: "#7a8780", lineHeight: 1.6 }}>
+                Usa <b>📲 Invitar</b> (arriba) para mandar el enlace por WhatsApp: cada uno crea su cuenta, postula a
+                <b> {community.name}</b> y tú lo aceptas desde aquí. Para una fecha suelta también puedes sumar invitados al crear el evento.
+              </div>
+            </Card>
+          )}
           {isOwner && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Como dueño, puedes nombrar administradores (pueden crear eventos, editar reglas y gestionar jugadores).</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
             {community.members.map((id) => {
