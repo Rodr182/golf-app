@@ -537,6 +537,24 @@ function mergePlayers(localList, remoteList) {
 }
 const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergePlayers, gb_comm_v2: mergeCommunities };
 
+/* ---- GUARDIÁN DE VERSIÓN DE DATOS ----
+   Si desde el servidor se reinician los datos, una pestaña que quedó abierta
+   con el estado anterior los volvería a subir al guardar. Para evitarlo, el
+   servidor guarda un número de "época": la pestaña recuerda con cuál cargó y,
+   si la de la nube cambió, no escribe nada y se recarga sola. */
+let dataEpoch = null;
+async function readEpoch() {
+  try {
+    const { data, error } = await sb.from("collections").select("value").eq("key", "gb_epoch").maybeSingle();
+    if (error) throw error;
+    return data ? data.value : 0;
+  } catch { return null; } // no se pudo leer: no bloqueamos el guardado
+}
+async function epochChanged() {
+  const remote = await readEpoch();
+  return remote !== null && dataEpoch !== null && remote !== dataEpoch;
+}
+
 // Persistencia en Supabase: tabla "collections" (key → value jsonb).
 // Las escrituras se agrupan (debounce) y se fusionan con lo último de la nube.
 const cloudTimers = {};
@@ -552,6 +570,8 @@ const cloudStore = {
     clearTimeout(cloudTimers[k]);
     cloudTimers[k] = setTimeout(async () => {
       try {
+        // Los datos se reiniciaron desde el servidor: no subir el estado viejo.
+        if (await epochChanged()) { window.location.reload(); return; }
         let out = v;
         const merger = CLOUD_MERGERS[k];
         if (merger) {
@@ -3029,6 +3049,7 @@ export default function App() {
   const loadData = async () => {
     // Sin datos de ejemplo: cada quien crea su cuenta, sus comunidades y sus
     // rondas. Lo único sembrado es el catálogo oficial de canchas.
+    if (CLOUD) dataEpoch = await readEpoch();
     const base = (await store.get("gb_players_v2", null)) || [];
     setPlayers(base);
     setCommunities(await store.get("gb_comm_v2", []));
@@ -3067,6 +3088,7 @@ export default function App() {
     const tick = async () => {
       if (document.hidden) return;
       try {
+        if (await epochChanged()) { window.location.reload(); return; }
         const { data } = await sb.from("collections").select("key,value").in("key", ["gb_events_v1", "gb_rounds_v2", "gb_players_v2", "gb_comm_v2"]);
         if (!data) return;
         const map = {}; data.forEach((r) => (map[r.key] = r.value));
