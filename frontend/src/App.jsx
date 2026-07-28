@@ -1385,9 +1385,24 @@ const LIBRE_COMMUNITY = {
   medal: { tokens: 0, rulePct: 100 }, regla8: false,
   admin: null, admins: [], members: [],
 };
+/* Una ronda libre es un evento de verdad (se guarda y se sincroniza), pero no
+   pertenece a ninguna comunidad: se le arma una "comunidad" al vuelo con las
+   reglas que eligió quien la creó, y esa persona es su administradora. */
+const libreCommunityFor = (ev) => ({
+  ...LIBRE_COMMUNITY,
+  ...(ev.rules || {}),
+  name: ev.name || "Ronda libre",
+  admin: ev.createdBy || null,
+  admins: [],
+  members: ev.registered || [],
+});
+/* La comunidad que corresponde a un evento, sea de comunidad o libre */
+const communityForEvent = (ev, communities) =>
+  ev.communityId === "libre" ? libreCommunityFor(ev) : communities.find((c) => c.id === ev.communityId);
 
-function StartRound({ courses, communities, players, me, onSave, onCancel, initialEvent }) {
+function StartRound({ courses, communities, players, me, onStart, onCancel, initialEvent }) {
   const [step, setStep] = useState(1);
+  const [name, setName] = useState("");
   const [date, setDate] = useState(initialEvent?.date || new Date().toISOString().slice(0, 10));
   const [courseId, setCourseId] = useState(initialEvent?.courseId || courses[0]?.id);
   // Si no perteneces a ninguna comunidad, la ronda libre es la opción por defecto
@@ -1396,8 +1411,6 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
   const [guests, setGuests] = useState([]);      // invitados sin cuenta (solo ronda libre)
   const [guestName, setGuestName] = useState("");
   const [teams, setTeams] = useState(initialEvent?.teams || [{ id: 1, start: 1, players: [], pairs: [] }]);
-  const [scoringTeam, setScoringTeam] = useState(null);   // equipo abierto en la entrada de scores
-  const [entryMode, setEntryMode] = useState("hole");     // "hole" | "matrix"
   const [custom, setCustom] = useState(null);             // reglas personalizadas de esta ronda (null = las de la comunidad)
 
   const course = courses.find((c) => c.id === courseId) || courses[0];
@@ -1414,6 +1427,12 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
     return ids.map((id) => ({ id, name: resolveName(id, players) }));
   }, [community, players, me, guests]);
 
+  // Solo quien tiene cuenta puede anotar; los invitados no entran a la app.
+  const hasAccount = (pid) => players.some((p) => p.id === pid && p.email);
+  // Anotador por defecto de un equipo: el primero con cuenta; si son todos
+  // invitados, anota quien creó la ronda.
+  const defaultScorer = (list) => (list.find((p) => hasAccount(p.id)) || {}).id || me.id;
+
   const addTeam = () => setTeams([...teams, { id: teams.length + 1, start: 1, players: [], pairs: [] }]);
   const setTeam = (id, patch) => setTeams(teams.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   const togglePlayer = (tid, pid) => {
@@ -1422,7 +1441,9 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
     let players2;
     if (exists) players2 = t.players.filter((p) => p.id !== pid);
     else { if (t.players.length >= 5) return; const rec = players.find((x) => x.id === pid); players2 = [...t.players, { id: pid, name: memberPool.find((m) => m.id === pid)?.name || pid, hcp: rec && typeof rec.hcp === "number" ? rec.hcp : 0, gross: new Array(18).fill("") }]; }
-    setTeam(tid, { players: players2, pairs: autoPairs(players2) });
+    // el anotador sigue siendo válido si continúa en el equipo; si no, se recalcula
+    const keep = t.scorerId && (players2.some((p) => p.id === t.scorerId) || t.scorerId === me.id);
+    setTeam(tid, { players: players2, pairs: autoPairs(players2), scorerId: keep ? t.scorerId : defaultScorer(players2) });
   };
   const setHcp = (tid, pid, v) => {
     const t = teams.find((x) => x.id === tid);
@@ -1435,35 +1456,50 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
     if (players.length === 4) return [[players[0].id, players[1].id], [players[2].id, players[3].id]];
     return []; // 3 jugadores: sin parejas. 5: parejas rotativas (pendiente), se omite el concurso de parejas.
   };
-  const setGross = (tid, pid, h, v) => {
-    setTeams((prev) => prev.map((t) => t.id !== tid ? t : { ...t, players: t.players.map((p) => p.id !== pid ? p : { ...p, gross: p.gross.map((g, i) => (i === h ? v : g)) }) }));
-  };
-
-  const event = { courseId: course.id, communityId: community.id, date, teams };
   const rules = custom
     ? { rulePct: +custom.rulePct || 0, tokenValue: +custom.tokenValue || 0, bet: { front: +custom.front || 0, back: +custom.back || 0, match: +custom.match || 0, bye: +custom.bye || 0 }, medal: community.medal, regla8: !!custom.regla8, currency: community.currency, multiStroke: !!custom.multiStroke }
     : { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, multiStroke: !!community.multiStroke };
   rules.regla8Holes = ((community.regla8Map || {})[course?.id]) || [];
   // Con algún grupo de 1 o 2 jugadores, la ronda es SIMPLE: solo tarjeta, sin apuestas.
   const simpleMode = teams.some((t) => t.players.length < 3);
-  const results = useMemo(() => {
-    try {
-      if (simpleMode) return computeSimpleRound(JSON.parse(JSON.stringify(event)), course, rules);
-      return computeEvent(JSON.parse(JSON.stringify(event)), course, rules);
-    } catch (e) { return null; }
-  }, [step]); // recompute al entrar al paso 4
 
   const canStep2 = teams.every((t) => t.players.length >= 1 && t.players.length <= 5) && teams.length >= 1;
-  const allFilled = teams.every((t) => t.players.every((p) => p.gross.every((g) => g !== "" && g != null)));
+
+  // Al empezar, la ronda se convierte en un EVENTO guardado: así no se pierde
+  // si cierras la app, se sincroniza entre celulares y los demás participantes
+  // con cuenta la ven y pueden anotar su equipo.
+  const startRound = () => {
+    const nombre = name.trim() || (community.id === "libre" ? "Ronda libre" : "Ronda rápida") + " · " + date;
+    const cuentas = [...new Set(teams.flatMap((t) => t.players.map((p) => p.id)).filter(hasAccount))];
+    const invitados = guests.filter((g) => teams.some((t) => t.players.some((p) => p.id === g.id))).map((g) => ({ ...g, guest: true }));
+    const ev = {
+      id: "ev" + Date.now(), communityId: community.id, courseId: course.id, date,
+      name: nombre, status: "jugando", quick: true, createdBy: me.id,
+      registered: [...cuentas, ...invitados.map((g) => g.id)],
+      guests: invitados,
+      rules: { ...rules, regla8Map: community.regla8Map || {} },
+      groups: teams.map((t, i) => ({
+        id: i + 1, start: t.start,
+        playerIds: t.players.map((p) => p.id),
+        hcps: Object.fromEntries(t.players.map((p) => [p.id, p.hcp])),
+        scorerId: t.scorerId || defaultScorer(t.players),
+        loanPlayerId: t.loanPlayerId || null, dropPlayerId: t.dropPlayerId || null,
+        drawnOrder: t.players.map((p) => p.id), drawnMode: "manual",
+        scores: {},
+      })),
+      _rev: 1,
+    };
+    onStart(ev);
+  };
 
   const Stepper = () => (
     <div style={{ display: "flex", gap: 6, marginBottom: 22, flexWrap: "wrap" }}>
-      {["Evento", "Jugadores", "Scores", "Resultados"].map((s, i) => (
+      {["Evento", "Jugadores"].map((s, i) => (
         <div key={s} style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <div style={{ width: 24, height: 24, borderRadius: 999, display: "grid", placeItems: "center", fontWeight: 800, fontSize: 12,
             background: step >= i + 1 ? C.gold : C.creamDk, color: step >= i + 1 ? "#2c2003" : "#9aa69e" }}>{i + 1}</div>
           <span style={{ fontSize: 13.5, fontWeight: 600, color: step >= i + 1 ? C.green : "#9aa69e" }}>{s}</span>
-          {i < 3 && <span style={{ color: C.line }}>—</span>}
+          {i < 1 && <span style={{ color: C.line }}>—</span>}
         </div>
       ))}
     </div>
@@ -1491,6 +1527,9 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
             </div>
           )}
           <Field label="Fecha"><input style={inputStyle} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Nombre de la ronda (opcional)">
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder={communityId === "libre" ? "Ej: Sábado en Los Inkas" : "Ej: Ronda rápida"} />
+          </Field>
 
           {/* REGLAS DE LA RONDA: por defecto las de la comunidad, personalizables */}
           <label style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0 10px", cursor: "pointer" }}>
@@ -1575,6 +1614,27 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
                       <div style={{ fontWeight: 700, color: C.green }}>{p.hcp === "" || p.hcp == null ? "—" : adjustedHcp(p.hcp, rules.rulePct)}</div>
                     </div>
                   ))}
+                  {/* ANOTADOR DEL EQUIPO: solo quien tiene cuenta puede anotar */}
+                  <div style={{ marginTop: 10, padding: 10, background: C.cream, borderRadius: 10 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, marginBottom: 6 }}>¿Quién anota este equipo?</div>
+                    {(() => {
+                      const conCuenta = t.players.filter((p) => hasAccount(p.id));
+                      const opciones = conCuenta.length ? conCuenta : [{ id: me.id, name: resolveName(me.id, players) }];
+                      const val = t.scorerId && opciones.some((o) => o.id === t.scorerId) ? t.scorerId : opciones[0].id;
+                      return (
+                        <>
+                          <select style={{ ...inputStyle, padding: "8px 10px", marginBottom: 4 }} value={val} onChange={(e) => setTeam(t.id, { scorerId: e.target.value })}>
+                            {opciones.map((o) => <option key={o.id} value={o.id}>{o.name}{o.id === me.id ? " (tú)" : ""}</option>)}
+                          </select>
+                          <div style={{ fontSize: 11.5, color: "#7a8780" }}>
+                            {conCuenta.length === 0
+                              ? "Todos son invitados, así que anotas tú desde tu cuenta."
+                              : "Los demás del equipo ven la tarjeta en vivo aunque no anoten."}
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
                   {t.players.length === 3 && (
                     <div style={{ marginTop: 10, padding: 10, background: C.cream, borderRadius: 10 }}>
                       <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 6 }}>3 jugadores → sin parejas. Para <b>Grupos vs. Grupos</b> se presta un jugador de otro grupo:</div>
@@ -1615,91 +1675,15 @@ function StartRound({ courses, communities, players, me, onSave, onCancel, initi
             <Btn variant="ghost" onClick={addTeam}>+ Añadir equipo</Btn>
             <div style={{ display: "flex", gap: 10 }}>
               <Btn variant="ghost" onClick={() => setStep(1)}>← Atrás</Btn>
-              <Btn disabled={!canStep2} onClick={() => setStep(3)}>Siguiente →</Btn>
+              <Btn variant="gold" disabled={!canStep2} onClick={startRound}>Empezar ronda →</Btn>
             </div>
           </div>
           {!canStep2 && <div style={{ color: C.red, fontSize: 13, marginTop: 8, textAlign: "right" }}>Cada grupo necesita entre 1 y 5 jugadores.</div>}
           {canStep2 && simpleMode && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8, textAlign: "right" }}>Ronda simple: solo tarjeta y estadísticas, sin apuestas (los grupos de 3 a 5 activan el Machetero).</div>}
+          {canStep2 && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8, textAlign: "right" }}>La ronda queda guardada al empezar: puedes salir y volver, y los demás con cuenta la verán.</div>}
         </div>
       )}
 
-      {step === 3 && (() => {
-        const teamFilled = (tm) => tm.players.every((p) => p.gross.every((g) => g !== "" && g != null));
-        const t = teams.find((x) => x.id === scoringTeam) || (teams.length === 1 ? teams[0] : null);
-        return (
-          <div>
-            {t ? (
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                  <div>
-                    {teams.length > 1 && <button onClick={() => setScoringTeam(null)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", padding: 0, fontSize: 13.5, fontFamily: "'Spline Sans',sans-serif" }}>← Todos los equipos</button>}
-                    <div style={{ fontWeight: 700 }}>Equipo {t.id} · salida hoyo {t.start}</div>
-                    <div style={{ fontSize: 13, color: "#7a8780" }}>Golpes brutos por hoyo · solo números enteros.</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 4, background: C.creamDk, borderRadius: 10, padding: 3 }}>
-                    {[["hole", "Hoyo por hoyo"], ["matrix", "Tarjeta completa"]].map(([m, l]) => (
-                      <button key={m} onClick={() => setEntryMode(m)} style={{ border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 12px", fontWeight: 700, fontSize: 12.5,
-                        fontFamily: "'Spline Sans',sans-serif", background: entryMode === m ? C.green : "transparent", color: entryMode === m ? C.cream : C.green }}>{l}</button>
-                    ))}
-                  </div>
-                </div>
-                {entryMode === "hole" ? (
-                  <HoleByHole key={t.id} course={course} start={t.start} playerList={t.players}
-                    scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))}
-                    rulePct={rules.rulePct} multiStroke={rules.multiStroke} onSet={(pid, h, v) => setGross(t.id, pid, h, v)} />
-                ) : (
-                  <ScoreMatrix event={{ teams: [t] }} course={course} onChange={setGross} />
-                )}
-                <GroupLiveSummary course={course} playerList={t.players}
-                  scores={Object.fromEntries(t.players.map((p) => [p.id, p.gross]))} rulePct={rules.rulePct} start={t.start} multiStroke={rules.multiStroke} />
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {teams.map((tm) => {
-                  const done = teamFilled(tm);
-                  return (
-                    <Card key={tm.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-                      <div>
-                        <div style={{ fontWeight: 700 }}>Equipo {tm.id} · salida hoyo {tm.start}</div>
-                        <div style={{ color: "#7a8780", fontSize: 13 }}>{tm.players.map((p) => p.name).join(", ")}</div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
-                        <Btn variant={done ? "ghost" : "primary"} onClick={() => setScoringTeam(tm.id)}>{done ? "Editar" : "Llenar scores"}</Btn>
-                      </div>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16 }}>
-              <Btn variant="danger" onClick={onCancel}>Cancelar</Btn>
-              <div style={{ display: "flex", gap: 10 }}>
-                <Btn variant="ghost" onClick={() => { setScoringTeam(null); setStep(2); }}>← Atrás</Btn>
-                <Btn variant="gold" disabled={!allFilled} onClick={() => { setScoringTeam(null); setStep(4); }}>Terminar ronda →</Btn>
-              </div>
-            </div>
-            {!allFilled && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8, textAlign: "right" }}>Completa todos los scores para terminar.</div>}
-          </div>
-        );
-      })()}
-
-      {step === 4 && results && (
-        <div>
-          {results.simple
-            ? <SimpleResults results={results} />
-            : <Results results={results} community={{ ...community, tokenValue: rules.tokenValue, currency: rules.currency }} />}
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 20 }}>
-            <Btn variant="ghost" onClick={() => setStep(3)}>← Editar scores</Btn>
-            <Btn variant="gold" onClick={() => {
-              // marca a los invitados para distinguirlos en la tarjeta y excluirlos de money lists
-              const gIds = new Set(guests.map((x) => x.id));
-              results.rows.forEach((row) => { if (gIds.has(row.id)) row.guest = true; });
-              onSave({ ...event, guests, results });
-            }}>Guardar ronda</Btn>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2050,8 +2034,10 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
           <Card key={i} style={{ padding: 14, marginBottom: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div>
-                <div style={{ fontWeight: 700 }}>{c?.name || (r.communityId === "libre" ? "🕊️ Ronda libre" : "Comunidad")} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
-                <div style={{ color: "#7a8780", fontSize: 13 }}>{course?.name || ""} · {r.results.rows.length} jugadores</div>
+                <div style={{ fontWeight: 700 }}>{r.eventName || c?.name || (r.communityId === "libre" ? "🕊️ Ronda libre" : "Comunidad")} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
+                <div style={{ color: "#7a8780", fontSize: 13 }}>
+                  {c?.name || (r.communityId === "libre" ? "🕊️ Ronda libre" : "Comunidad")} · {course?.name || ""} · {r.results.rows.length} jugadores
+                </div>
               </div>
               <div style={{ textAlign: "right" }}>
                 {myRow ? (
@@ -2225,8 +2211,12 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     const cur = g.scores[pid] ? g.scores[pid].slice() : new Array(18).fill("");
     cur[h] = v; setGroup(gid, { scores: { ...g.scores, [pid]: cur } });
   };
-  const groupFilled = (g) => g.playerIds.length >= 3 && g.playerIds.every((pid) => (g.scores[pid] || []).length === 18 && g.scores[pid].every((s) => s !== "" && s != null));
-  const allGroupsReady = groups.length >= 1 && groups.every((g) => g.playerIds.length >= 3 && g.scorerId);
+  // En una ronda rápida (o libre) se admite jugar solo o en pareja: ahí no hay
+  // Machetero, se guarda como ronda simple (tarjeta y estadísticas).
+  const minPorGrupo = event.quick ? 1 : 3;
+  const simpleMode = groups.some((g) => g.playerIds.length < 3);
+  const groupFilled = (g) => g.playerIds.length >= minPorGrupo && g.playerIds.every((pid) => (g.scores[pid] || []).length === 18 && g.scores[pid].every((s) => s !== "" && s != null));
+  const allGroupsReady = groups.length >= 1 && groups.every((g) => g.playerIds.length >= minPorGrupo && g.scorerId);
   const allScored = groups.length >= 1 && groups.every(groupFilled);
 
   // El jugador prestado (grupos de 3) se decide recién al consolidar, con
@@ -2242,7 +2232,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     });
     const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
     const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, regla8Holes: ((community.regla8Map || {})[event.courseId]) || [], multiStroke: !!community.multiStroke };
-    const results = computeEvent(JSON.parse(JSON.stringify(evObj)), course, rules);
+    const results = simpleMode
+      ? computeSimpleRound(JSON.parse(JSON.stringify(evObj)), course, rules)
+      : computeEvent(JSON.parse(JSON.stringify(evObj)), course, rules);
     // Marca a los invitados: juegan en las cuentas del día pero no cuentan
     // para la money list acumulada de la comunidad.
     results.rows.forEach((r) => { if (guestIdSet.has(r.id)) r.guest = true; });
@@ -2514,10 +2506,34 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
           <GroupLiveSummary course={course} playerList={playerList} scores={g.scores} rulePct={community.rulePct} start={g.start} multiStroke={!!community.multiStroke} />
 
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
-            <Btn variant="ghost" onClick={() => setScoringGroup(null)}>← Grupos</Btn>
-            {canEdit && <Btn variant="gold" disabled={!groupFilled(g)} onClick={() => setScoringGroup(null)}>Guardar scores del grupo</Btn>}
-          </div>
+          {/* Al terminar una tarjeta se puede saltar directo a la siguiente que
+              me toque anotar, sin volver a la lista de grupos. */}
+          {(() => {
+            const míos = groups.filter((x) => mode === "play" && (x.scorerId === me.id || admin));
+            const pendiente = míos.find((x) => x.id !== g.id && !groupFilled(x));
+            return (
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14, gap: 10, flexWrap: "wrap" }}>
+                <Btn variant="ghost" onClick={() => setScoringGroup(null)}>← Grupos</Btn>
+                {canEdit && (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <Btn variant={pendiente ? "ghost" : "gold"} onClick={() => setScoringGroup(null)}>
+                      {groupFilled(g) ? "Guardar y volver" : "Guardar y seguir después"}
+                    </Btn>
+                    {pendiente && (
+                      <Btn variant="gold" onClick={() => { setScoringGroup(pendiente.id); window.scrollTo(0, 0); }}>
+                        Siguiente tarjeta · Grupo {pendiente.id} →
+                      </Btn>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          {canEdit && !groupFilled(g) && (
+            <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 8, textAlign: "right" }}>
+              Lo que anotas se guarda solo, hoyo por hoyo: puedes salir y volver cuando quieras.
+            </div>
+          )}
         </div>
       );
     }
@@ -2631,11 +2647,21 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
         {admin && !loanStep && (
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <Btn variant="ghost" onClick={() => updateEvent({ status: "grupos" })}>← Grupos</Btn>
-            <Btn variant="gold" disabled={!allScored} onClick={startConsolidate}>Consolidar resultados →</Btn>
+            {/* una ronda rápida nunca pasó por la etapa de inscripción/grupos */}
+            {event.quick ? <Btn variant="ghost" onClick={onClose}>← Salir</Btn>
+              : <Btn variant="ghost" onClick={() => updateEvent({ status: "grupos" })}>← Grupos</Btn>}
+            <Btn variant="gold" disabled={!allScored} onClick={startConsolidate}>
+              {simpleMode ? "Terminar ronda →" : "Consolidar resultados →"}
+            </Btn>
           </div>
         )}
-        {!allScored && <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8 }}>Cuando todos los grupos estén completos, el admin consolida el evento.</div>}
+        {!allScored && (
+          <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8 }}>
+            {event.quick
+              ? "Cuando todas las tarjetas estén completas se calculan los resultados. Mientras tanto puedes salir: lo anotado queda guardado."
+              : "Cuando todos los grupos estén completos, el admin consolida el evento."}
+          </div>
+        )}
       </div>
     );
   }
@@ -2644,7 +2670,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   return (
     <div>
       <Head />
-      <Card style={{ padding: 18, color: "#7a8780" }}>Evento consolidado. Los resultados están en la pestaña <b style={{ color: C.green }}>Resultados</b> de la comunidad y en la Money List.</Card>
+      <Card style={{ padding: 18, color: "#7a8780" }}>
+        {community.id === "libre"
+          ? <>Ronda cerrada. Los resultados y la tarjeta completa quedaron en <b style={{ color: C.green }}>Jugador (yo)</b>, para ti y para cada participante con cuenta.</>
+          : <>Evento consolidado. Los resultados están en la pestaña <b style={{ color: C.green }}>Resultados</b> de la comunidad y en la Money List.</>}
+      </Card>
     </div>
   );
 }
@@ -3499,21 +3529,26 @@ export default function App() {
   const toggleCommunityPro = (c) => setCommunities((prev) => prev.map((x) => (x.id === c.id ? { ...x, pro: !x.pro } : x)));
   const myPro = userIsPro(me);
 
-  // Eventos activos en mis comunidades (para avisos y para "Iniciar Ronda")
+  // Eventos activos en mis comunidades (para avisos y para "Iniciar Ronda").
+  // Las rondas libres no tienen comunidad: las ven quienes juegan en ellas.
   const myOpenEvents = events.filter((e) => {
+    if (e.status === "cerrado") return false;
+    if (e.communityId === "libre") return e.createdBy === me.id || (e.registered || []).includes(me.id);
     const c = communities.find((x) => x.id === e.communityId);
-    return c && (c.members.includes(me.id) || c.admin === me.id) && e.status !== "cerrado";
+    return c && (c.members.includes(me.id) || c.admin === me.id);
   });
   const needRegister = myOpenEvents.filter((e) => e.status === "inscripcion" && !(e.registered || []).includes(me.id));
   const inPlay = myOpenEvents.filter((e) => e.status !== "inscripcion" && (e.registered || []).includes(me.id));
   const goToEvent = (ev) => {
+    // Una ronda libre no vive en ninguna comunidad: se entra directo a jugarla
+    if (ev.communityId === "libre") { setPlayEventId(ev.id); setView("round"); return; }
     const c = communities.find((x) => x.id === ev.communityId);
     if (!c) return;
     setEventJump(ev.id); setOpenCommunity(c); setView("communities");
   };
   // ¿Soy anotador (o admin) de algún grupo del evento? Define si entro a anotar o a ver en vivo.
   const isScorer = (ev) => {
-    const c = communities.find((x) => x.id === ev.communityId);
+    const c = communityForEvent(ev, communities);
     if (c && isAdmin(c, me.id)) return true;
     return (ev.groups || []).some((g) => g.scorerId === me.id);
   };
@@ -3648,7 +3683,7 @@ export default function App() {
 
         {view === "round" && playEventId && (() => {
           const ev = events.find((x) => x.id === playEventId);
-          const comm = ev && communities.find((c) => c.id === ev.communityId);
+          const comm = ev && communityForEvent(ev, communities);
           if (!ev || !comm) return null;
           return (
             <EventManager mode="play" event={ev} community={comm} courses={courses} players={[...players, ...(ev.guests || [])]} me={me}
@@ -3658,17 +3693,21 @@ export default function App() {
         {view === "round" && !playEventId && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (
           <div>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 24, color: C.green, marginBottom: 6 }}>Iniciar Ronda</div>
-            <div style={{ fontSize: 13.5, color: "#7a8780", marginBottom: 14 }}>Tienes eventos activos en tus comunidades. Continúa ahí, o crea una ronda casual aparte.</div>
+            <div style={{ fontSize: 13.5, color: "#7a8780", marginBottom: 14 }}>Tienes rondas activas. Continúa ahí, o crea una ronda casual aparte.</div>
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
               {myOpenEvents.map((e) => {
-                const c = communities.find((x) => x.id === e.communityId);
+                const libre = e.communityId === "libre";
+                const c = libre ? null : communities.find((x) => x.id === e.communityId);
                 const [lbl, tone] = EVJUMP_STATUS[e.status] || ["—", "neutral"];
                 const registered = (e.registered || []).includes(me.id);
                 return (
                   <Card key={e.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
                     <div>
                       <div style={{ fontWeight: 700 }}>{e.name} <Chip tone={tone}>{lbl}</Chip></div>
-                      <div style={{ fontSize: 13, color: "#7a8780", marginTop: 2 }}>{c?.name} · {e.date}{e.status === "inscripcion" ? ` · ${(e.registered || []).length} inscritos` : ""}</div>
+                      <div style={{ fontSize: 13, color: "#7a8780", marginTop: 2 }}>
+                        {libre ? "🕊️ Ronda libre" : c?.name} · {e.date}
+                        {libre ? ` · ${(e.groups || []).length} ${(e.groups || []).length === 1 ? "equipo" : "equipos"}` : e.status === "inscripcion" ? ` · ${(e.registered || []).length} inscritos` : ""}
+                      </div>
                     </div>
                     <Btn variant={e.status === "inscripcion" && !registered ? "gold" : "primary"}
                       onClick={() => { if (e.status === "jugando") setPlayEventId(e.id); else goToEvent(e); }}>
@@ -3695,7 +3734,11 @@ export default function App() {
             me={me}
             initialEvent={roundCommunity ? { communityId: roundCommunity } : null}
             onCancel={() => { setRoundCommunity(null); setQuickRound(false); setView("home"); }}
-            onSave={(ev) => { setRounds((r) => [{ id: "r" + Date.now(), ...ev }, ...r]); setRoundCommunity(null); setQuickRound(false); setView("player"); }}
+            onStart={(ev) => {
+              // la ronda nace como evento guardado y se sigue en el motor de eventos
+              setEvents((prev) => [ev, ...prev]);
+              setRoundCommunity(null); setQuickRound(false); setPlayEventId(ev.id); setView("round");
+            }}
           />
         )}
       </div>

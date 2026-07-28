@@ -35,6 +35,20 @@ Para empezar: crea tu cuenta → **Comunidades → + Nueva comunidad** → defin
 las reglas → comparte el enlace de la app con tu grupo para que postulen.
 También puedes jugar sin comunidad desde **Iniciar Ronda → Ronda libre**.
 
+## Rondas fuera de un evento
+
+Desde **Iniciar Ronda** se puede armar una ronda suelta, con o sin comunidad
+(«ronda libre»). Al pulsar **Empezar ronda** la ronda **queda guardada**: se
+puede salir de la app y volver, se sincroniza entre celulares, y los
+participantes que tienen cuenta la ven en su propio *Iniciar Ronda*.
+
+Cada equipo lleva un **anotador designado** (solo puede serlo quien tiene
+cuenta; si todos son invitados, anota quien creó la ronda). Los demás del
+equipo ven la tarjeta en vivo en modo lectura. Terminada una tarjeta se salta
+a la siguiente con **Siguiente tarjeta**, y cuando todas están completas se
+calculan los resultados. Jugando solo o en pareja no hay apuestas: se guarda
+como *ronda simple* (tarjeta y estadísticas).
+
 ## Ranking y pozo de la comunidad
 
 Dentro de cada comunidad, además de la Money List:
