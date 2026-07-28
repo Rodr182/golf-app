@@ -27,7 +27,10 @@ jobs:
           q "select key, jsonb_array_length(value) as elementos from public.collections where jsonb_typeof(value)='array' order by key;"
 
           echo "== Rondas guardadas (fecha y jugadores) =="
-          q "select r->>'date' as fecha, r->>'communityId' as comunidad, jsonb_array_length(r->'teams') as grupos from public.collections, jsonb_array_elements(value) r where key='gb_rounds_v2';"
+          q "select r->>'eventName' as nombre, r->>'date' as fecha, r->>'communityId' as comunidad, jsonb_array_length(r->'teams') as grupos, jsonb_array_length(r->'results'->'rows') as jugadores from public.collections, jsonb_array_elements(value) r where key='gb_rounds_v2';"
+
+          echo "== Rondas EN CURSO (aún sin consolidar) =="
+          q "select e->>'name' as nombre, e->>'date' as fecha, e->>'communityId' as comunidad, e->>'status' as estado, jsonb_array_length(e->'groups') as grupos, (select count(*) from jsonb_array_elements(e->'groups') g, jsonb_each(g->'scores') s where jsonb_typeof(s.value)='array' and exists (select 1 from jsonb_array_elements_text(s.value) v where v.value <> '')) as jugadores_con_scores from public.collections, jsonb_array_elements(value) e where key='gb_events_v1';"
 
           echo "== Comunidades =="
           q "select c->>'name' as nombre, jsonb_array_length(c->'members') as miembros from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
