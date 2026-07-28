@@ -49,6 +49,14 @@ a la siguiente con **Siguiente tarjeta**, y cuando todas están completas se
 calculan los resultados. Jugando solo o en pareja no hay apuestas: se guarda
 como *ronda simple* (tarjeta y estadísticas).
 
+## Compartir resultados por WhatsApp
+
+Toda ronda ya cerrada trae **📲 Compartir por WhatsApp**: al consolidar (en la
+misma pantalla, junto a los resultados), en **Resultados** de la comunidad y en
+el **historial del perfil**. El mensaje va en texto plano —nombre de la ronda,
+fecha, cancha, comunidad, la tabla del día jugador por jugador con su resultado
+y el pozo—, con 🎟️ marcando a los invitados.
+
 ## Ranking y pozo de la comunidad
 
 Dentro de cada comunidad, además de la Money List:

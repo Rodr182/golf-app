@@ -348,6 +348,55 @@ function SimpleResults({ results }) {
   );
 }
 
+/* ---- COMPARTIR RESULTADOS POR WHATSAPP ----
+   Arma un mensaje de texto plano (WhatsApp no entiende tablas): título,
+   cancha y fecha, la tabla del día en una línea por jugador y, al final,
+   quién ganó. Sirve igual para una fecha de comunidad y para una ronda libre. */
+const waMoney = (v, cur) => (v >= 0 ? "+" : "-") + cur + Math.abs(v).toFixed(2);
+const POS_ICON = ["🥇", "🥈", "🥉"];
+function roundShareText(round, { communityName, courseName, currency = "S/." } = {}) {
+  const res = round.results || {};
+  const rows = res.rows || [];
+  const L = [];
+  L.push(`⛳ *${round.eventName || "Ronda"}*`);
+  L.push(`${round.date}${courseName ? " · " + courseName : ""}`);
+  if (communityName) L.push(communityName);
+  L.push("");
+  if (res.simple) {
+    L.push(`*Tarjetas* (par ${res.parTotal})`);
+    [...rows].sort((a, b) => a.netTotal - b.netTotal).forEach((r, i) => {
+      const vs = r.vsPar > 0 ? "+" + r.vsPar : r.vsPar;
+      L.push(`${POS_ICON[i] || i + 1 + "."} ${r.name}${r.guest ? " 🎟️" : ""} — ${r.grossTotal} gross · ${r.netTotal} neto (${vs})`);
+    });
+  } else {
+    L.push("*Resultados del día*");
+    const sorted = [...rows].sort((a, b) => b.totalMoney - a.totalMoney);
+    sorted.forEach((r, i) => {
+      L.push(`${POS_ICON[i] || i + 1 + "."} ${r.name}${r.guest ? " 🎟️" : ""} — ${waMoney(r.totalMoney, currency)}`);
+    });
+    const ganadores = sorted.filter((r) => r.totalMoney > 0);
+    if (ganadores.length) {
+      L.push("");
+      L.push(`💰 Pozo del día: ${currency}${ganadores.reduce((s, r) => s + r.totalMoney, 0).toFixed(2)}`);
+    }
+    if (rows.some((r) => r.guest)) L.push("🎟️ = invitado (no suma a la money list)");
+  }
+  L.push("");
+  L.push("Anotado con GolfBuddy ⛳");
+  return L.join("\n");
+}
+const openWhatsApp = (texto) => window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank");
+/* Botón reutilizable para compartir una ronda ya consolidada */
+function ShareRoundBtn({ round, communityName, courseName, currency, style }) {
+  if (!round || !round.results) return null;
+  return (
+    <Btn variant="gold" style={style}
+      onClick={() => openWhatsApp(roundShareText(round, { communityName, courseName, currency }))}>
+      📲 Compartir por WhatsApp
+    </Btn>
+  );
+}
+
 /* ---------------- CATÁLOGO DE CANCHAS ----------------
    Base de datos oficial que mantiene el administrador de la app.
    Los usuarios solo la consultan; las reglas de juego viven en las
@@ -2060,11 +2109,14 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
                 )}
               </div>
             </div>
-            {course && (
-              <button onClick={() => setOpenCardIdx(isOpen ? null : i)} style={{ marginTop: 8, border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>
-                {isOpen ? "Ocultar tarjetas ▲" : "Ver tarjetas de la ronda ▼"}
-              </button>
-            )}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+              {course ? (
+                <button onClick={() => setOpenCardIdx(isOpen ? null : i)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>
+                  {isOpen ? "Ocultar tarjetas ▲" : "Ver tarjetas de la ronda ▼"}
+                </button>
+              ) : <span />}
+              <ShareRoundBtn round={r} communityName={c?.name} courseName={course?.name} currency={c?.currency || "S/."} />
+            </div>
             {isOpen && course && (() => {
               const guestIds = new Set((r.guests || []).map((x) => x.id));
               const rowsOf = r.teams.flatMap((t) => t.players.map((p) => ({ ...p, teamId: t.id, guest: guestIds.has(p.id) || (r.results.rows.find((x) => x.id === p.id) || {}).guest })));
@@ -2122,7 +2174,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
 /* ---------------- GESTOR DE EVENTOS (inscripción → grupos → juego → consolidación) ---------------- */
 /* mode: "admin" = gestión desde la comunidad (sin llenado de scores);
    "play" = anotación de scores desde Iniciar Ronda. */
-function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onClose, mode = "admin" }) {
+function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onClose, mode = "admin", rounds = [] }) {
   const course = courses.find((c) => c.id === event.courseId) || courses[0];
   const admin = isAdmin(community, me.id);
   // _rev crece con cada cambio: en la fusión entre celulares gana la versión más nueva
@@ -2666,15 +2718,27 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     );
   }
 
-  // cerrado
+  // cerrado: se muestran los resultados y se pueden compartir por WhatsApp
+  const roundSaved = rounds.find((r) => r.id === (event.resultsRoundId || event.id));
   return (
     <div>
       <Head />
-      <Card style={{ padding: 18, color: "#7a8780" }}>
+      <Card style={{ padding: 18, color: "#7a8780", marginBottom: 14 }}>
         {community.id === "libre"
           ? <>Ronda cerrada. Los resultados y la tarjeta completa quedaron en <b style={{ color: C.green }}>Jugador (yo)</b>, para ti y para cada participante con cuenta.</>
           : <>Evento consolidado. Los resultados están en la pestaña <b style={{ color: C.green }}>Resultados</b> de la comunidad y en la Money List.</>}
       </Card>
+      {roundSaved && (
+        <>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+            <ShareRoundBtn round={roundSaved} communityName={community.id === "libre" ? null : community.name}
+              courseName={course?.name} currency={community.currency} />
+          </div>
+          {roundSaved.results.simple
+            ? <SimpleResults results={roundSaved.results} />
+            : <Results results={roundSaved.results} community={community} />}
+        </>
+      )}
     </div>
   );
 }
@@ -3116,7 +3180,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 
       {tab === "eventos" && (
         managingEvent ? (
-          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} onSaveRound={onSaveRound} onClose={() => setManagingEventId(null)} />
+          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} rounds={rounds} onSaveRound={onSaveRound} onClose={() => setManagingEventId(null)} />
         ) : creatingEvent ? (
           <Card style={{ padding: 22, maxWidth: 520 }}>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 20, color: C.green, marginBottom: 14 }}>Nuevo evento</div>
@@ -3178,7 +3242,17 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                     </div>
                     <span style={{ color: C.green, fontWeight: 700 }}>{isOpen ? "Ocultar ▲" : "Ver resultados ▼"}</span>
                   </div>
-                  {isOpen && <div style={{ padding: "0 16px 18px", borderTop: `1px solid ${C.line}` }}><div style={{ marginTop: 14 }}><Results results={r.results} community={community} /></div></div>}
+                  {isOpen && (
+                    <div style={{ padding: "0 16px 18px", borderTop: `1px solid ${C.line}` }}>
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+                        <ShareRoundBtn round={r} communityName={community.name} currency={cur}
+                          courseName={courses.find((x) => x.id === r.courseId)?.name} />
+                      </div>
+                      <div style={{ marginTop: 14 }}>
+                        {r.results.simple ? <SimpleResults results={r.results} /> : <Results results={r.results} community={community} />}
+                      </div>
+                    </div>
+                  )}
                 </Card>
               );
             })}
@@ -3687,7 +3761,7 @@ export default function App() {
           if (!ev || !comm) return null;
           return (
             <EventManager mode="play" event={ev} community={comm} courses={courses} players={[...players, ...(ev.guests || [])]} me={me}
-              setEvents={setEvents} onSaveRound={(round) => setRounds((r) => [round, ...r])} onClose={() => setPlayEventId(null)} />
+              setEvents={setEvents} rounds={rounds} onSaveRound={(round) => setRounds((r) => [round, ...r])} onClose={() => setPlayEventId(null)} />
           );
         })()}
         {view === "round" && !playEventId && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (
