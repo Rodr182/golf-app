@@ -579,6 +579,67 @@ function playerScoreStats(meId, rounds, courses) {
   });
   return { counts, holes };
 }
+/* Rendimiento hoyo por hoyo en una cancha: promedio vs par de cada hoyo.
+   Responde "¿qué hoyos me cuestan el año?", como en la hoja Calculos Stats. */
+function playerHoleStats(meId, rounds, courseId, courses) {
+  const course = courses.find((c) => c.id === courseId);
+  if (!course) return null;
+  const suma = new Array(18).fill(0), veces = new Array(18).fill(0);
+  let vueltas = 0;
+  rounds.filter((r) => r.courseId === courseId).forEach((r) => {
+    let mp = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === meId) mp = p; }));
+    if (!mp) return;
+    let contó = false;
+    mp.gross.forEach((g, h) => {
+      const v = parseInt(g);
+      if (!v) return;
+      suma[h] += v - course.pars[h]; veces[h]++; contó = true;
+    });
+    if (contó) vueltas++;
+  });
+  if (!vueltas) return null;
+  const hoyos = suma.map((s, h) => ({ hoyo: h + 1, par: course.pars[h], si: course.strokes[h], vsPar: veces[h] ? s / veces[h] : null, veces: veces[h] }));
+  return { course, vueltas, hoyos };
+}
+
+/* Historial del Medal: en qué fechas se jugó y con qué neto quedó el jugador */
+function playerMedalHistory(meId, rounds) {
+  const out = [];
+  rounds.filter((r) => !r.results.simple).forEach((r) => {
+    const row = r.results.rows.find((x) => x.id === meId);
+    const medal = row && (row.contests || []).find((c) => c.medal);
+    if (!medal) return;
+    const netos = r.results.rows.map((x) => ((x.contests || []).find((c) => c.medal) || {}).meta?.netTotal).filter((n) => n != null);
+    const mejor = netos.length ? Math.min(...netos) : null;
+    out.push({
+      date: r.date, name: r.eventName || "Fecha", neto: medal.meta?.netTotal ?? null,
+      tokens: medal.total, anulado: !!medal.meta?.medalVoid, ganó: mejor != null && medal.meta?.netTotal === mejor && !medal.meta?.medalVoid,
+    });
+  });
+  return out;
+}
+
+/* Cara a cara: cómo le fue a dos jugadores en las fechas que compartieron */
+function headToHead(aId, bId, rounds, communityId) {
+  const filas = rounds.filter((r) => (!communityId || r.communityId === communityId) && !r.results.simple)
+    .map((r) => {
+      const ra = r.results.rows.find((x) => x.id === aId), rb = r.results.rows.find((x) => x.id === bId);
+      if (!ra || !rb) return null;
+      let ga = null, gb = null;
+      r.teams.forEach((t) => t.players.forEach((p) => {
+        const tot = p.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
+        if (p.id === aId) ga = tot; if (p.id === bId) gb = tot;
+      }));
+      return { date: r.date, name: r.eventName || "Fecha", aMoney: ra.totalMoney, bMoney: rb.totalMoney, aGross: ga, bGross: gb };
+    }).filter(Boolean);
+  const res = { fechas: filas.length, aMoney: 0, bMoney: 0, aGanó: 0, bGanó: 0, empates: 0, filas };
+  filas.forEach((f) => {
+    res.aMoney += f.aMoney; res.bMoney += f.bMoney;
+    if (f.aMoney > f.bMoney) res.aGanó++; else if (f.bMoney > f.aMoney) res.bGanó++; else res.empates++;
+  });
+  return res;
+}
+
 /* Movimiento del hándicap del jugador a lo largo de las rondas (más antiguo primero) */
 function playerHcpHistory(meId, rounds) {
   const hist = [];
@@ -636,6 +697,13 @@ function mergeById(localList, remoteList) {
   });
   return out;
 }
+/* ---- BORRADO QUE SÍ SE PROPAGA ----
+   La fusión solo une: si se quitara un elemento de la lista, un celular con la
+   lista vieja lo volvería a subir y reaparecería. Por eso borrar no elimina:
+   marca el elemento como borrado (con _rev mayor) y esa marca sí gana en la
+   fusión y llega a todos. La app oculta lo marcado. */
+const marcarBorrado = (x) => ({ ...x, _deleted: true, _rev: (x._rev || 0) + 1 });
+const vivos = (lista) => (lista || []).filter((x) => x && !x._deleted);
 // Comunidades: gana la versión con _rev mayor, pero SIEMPRE se unen las
 // postulaciones y los bloqueados — así una postulación no se pierde si un
 // admin edita las reglas al mismo tiempo.
@@ -671,7 +739,9 @@ function mergeByIdRev(localList, remoteList) {
   (remoteList || []).forEach((rp) => { if (rp && rp.id != null && !seen.has(rp.id)) out.push(rp); });
   return out;
 }
-const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeById, gb_players_v2: mergeByIdRev, gb_comm_v2: mergeCommunities, gb_courses_v2: mergeByIdRev };
+// Las rondas también usan la fusión con _rev para que una corrección (o un
+// borrado marcado) llegue a todos, no solo la unión por id.
+const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeByIdRev, gb_players_v2: mergeByIdRev, gb_comm_v2: mergeCommunities, gb_courses_v2: mergeByIdRev };
 
 /* ---- GUARDIÁN DE VERSIÓN DE DATOS ----
    Si desde el servidor se reinician los datos, una pestaña que quedó abierta
@@ -691,34 +761,81 @@ async function epochChanged() {
   return remote !== null && dataEpoch !== null && remote !== dataEpoch;
 }
 
+/* ---- ESTADO DE GUARDADO ----
+   En una cancha la señal se cae. Antes, si la subida fallaba, la app se
+   quedaba callada y el anotador seguía escribiendo creyendo que todo estaba
+   guardado. Ahora cada colección tiene un estado (ok / subiendo / falló),
+   se reintenta sola con esperas crecientes y la pantalla lo muestra. */
+const syncStatus = { pendientes: new Set(), fallidas: new Set(), ultimoError: null, listeners: new Set() };
+const notifySync = () => syncStatus.listeners.forEach((fn) => fn());
+const subscribeSync = (fn) => { syncStatus.listeners.add(fn); return () => syncStatus.listeners.delete(fn); };
+const REINTENTOS = [2000, 5000, 10000, 20000, 40000]; // esperas antes de cada reintento
+
+/* Copia local de respaldo: aunque la nube falle, lo anotado no se pierde
+   del celular y se recupera al volver a entrar. */
+const MIRROR = "gb_mirror_";
+const writeMirror = (k, v) => { try { localStorage.setItem(MIRROR + k, JSON.stringify(v)); } catch {} };
+const readMirror = (k) => { try { const r = localStorage.getItem(MIRROR + k); return r != null ? JSON.parse(r) : undefined; } catch { return undefined; } };
+
 // Persistencia en Supabase: tabla "collections" (key → value jsonb).
 // Las escrituras se agrupan (debounce) y se fusionan con lo último de la nube.
 const cloudTimers = {};
+const cloudRetry = {};
 const cloudStore = {
   async get(k, def) {
     try {
       const { data, error } = await sb.from("collections").select("value").eq("key", k).maybeSingle();
       if (error) throw error;
-      return data ? data.value : def;
-    } catch { return def; }
+      if (data) { writeMirror(k, data.value); return data.value; }
+      return def;
+    } catch {
+      // Sin conexión al cargar: se usa la copia local para no arrancar en blanco
+      const local = readMirror(k);
+      return local !== undefined ? local : def;
+    }
   },
   async set(k, v) {
+    writeMirror(k, v);                       // primero la copia local, siempre
     clearTimeout(cloudTimers[k]);
-    cloudTimers[k] = setTimeout(async () => {
-      try {
-        // Los datos se reiniciaron desde el servidor: no subir el estado viejo.
-        if (await epochChanged()) { window.location.reload(); return; }
-        let out = v;
-        const merger = CLOUD_MERGERS[k];
-        if (merger) {
-          const { data } = await sb.from("collections").select("value").eq("key", k).maybeSingle();
-          if (data && data.value) out = merger(v, data.value);
-        }
-        await sb.from("collections").upsert({ key: k, value: out, updated_at: new Date().toISOString() });
-      } catch {}
-    }, 600);
+    cloudTimers[k] = setTimeout(() => subirColeccion(k, v, 0), 600);
   },
 };
+
+async function subirColeccion(k, v, intento) {
+  syncStatus.pendientes.add(k); syncStatus.fallidas.delete(k); notifySync();
+  try {
+    // Los datos se reiniciaron desde el servidor: no subir el estado viejo.
+    if (await epochChanged()) { window.location.reload(); return; }
+    let out = v;
+    const merger = CLOUD_MERGERS[k];
+    if (merger) {
+      const { data, error } = await sb.from("collections").select("value").eq("key", k).maybeSingle();
+      if (error) throw error;
+      if (data && data.value) out = merger(v, data.value);
+    }
+    // OJO: supabase-js NO lanza excepción en un error de base de datos,
+    // lo devuelve en `error`. Si no se revisa, un rechazo pasa inadvertido.
+    const { error: errUp } = await sb.from("collections").upsert({ key: k, value: out, updated_at: new Date().toISOString() });
+    if (errUp) throw errUp;
+    syncStatus.pendientes.delete(k); syncStatus.fallidas.delete(k); notifySync();
+  } catch (e) {
+    if (intento < REINTENTOS.length) {
+      clearTimeout(cloudRetry[k]);
+      cloudRetry[k] = setTimeout(() => subirColeccion(k, v, intento + 1), REINTENTOS[intento]);
+    } else {
+      syncStatus.pendientes.delete(k);
+      syncStatus.fallidas.add(k);
+      syncStatus.ultimoError = (e && e.message) || "No se pudo guardar";
+      notifySync();
+    }
+  }
+}
+/* Reintento manual desde el aviso de la pantalla */
+function reintentarGuardado() {
+  const claves = [...syncStatus.fallidas];
+  syncStatus.fallidas.clear(); notifySync();
+  claves.forEach((k) => { const v = readMirror(k); if (v !== undefined) subirColeccion(k, v, 0); });
+}
 
 const store = CLOUD ? cloudStore : localStore;
 
@@ -754,6 +871,41 @@ function useMedia(query) {
     return () => mq.removeEventListener("change", fn);
   }, [query]);
   return matches;
+}
+
+/* ---- SELLO DE VERSIÓN ----
+   El celular puede quedarse con una versión vieja guardada en caché durante
+   días. Cada compilación deja su sello en el código y en version.json; la app
+   compara cada cierto tiempo y avisa (o se actualiza sola si no estás
+   anotando) cuando hay una más nueva publicada. */
+const BUILD_ACTUAL = typeof __BUILD__ === "string" ? __BUILD__ : "dev";
+function useVersionNueva(intervaloMs = 10 * 60 * 1000) {
+  const [hayNueva, setHayNueva] = useState(false);
+  useEffect(() => {
+    if (BUILD_ACTUAL === "dev") return; // en desarrollo no aplica
+    let vivo = true;
+    const revisar = async () => {
+      try {
+        const url = new URL("version.json", document.baseURI).href + "?t=" + Date.now();
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) return;
+        const { build } = await r.json();
+        if (vivo && build && build !== BUILD_ACTUAL) setHayNueva(true);
+      } catch {}
+    };
+    revisar();
+    const t = setInterval(revisar, intervaloMs);
+    window.addEventListener("focus", revisar);
+    return () => { vivo = false; clearInterval(t); window.removeEventListener("focus", revisar); };
+  }, [intervaloMs]);
+  return hayNueva;
+}
+
+/* Estado del guardado en la nube, para poder avisarlo en pantalla */
+function useSyncStatus() {
+  const [, forzar] = useState(0);
+  useEffect(() => subscribeSync(() => forzar((n) => n + 1)), []);
+  return { subiendo: syncStatus.pendientes.size, fallidas: syncStatus.fallidas.size, error: syncStatus.ultimoError };
 }
 
 function useFonts() {
@@ -1845,6 +1997,7 @@ function Communities({ communities, me, onOpen, onCreate }) {
 /* ---------------- PERFIL / ESTADÍSTICAS ---------------- */
 function PlayerView({ me, rounds, communities, players, courses: coursesProp, onSaveProfile, onChangePassword }) {
   const [openCardIdx, setOpenCardIdx] = useState(null);
+  const [holeCourse, setHoleCourse] = useState(null);
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ name: me.name || "", last: me.last || "", birth: me.birth || "", hcp: me.hcp ?? "" });
   const [msg, setMsg] = useState("");
@@ -2043,6 +2196,80 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
         </>
       )}
 
+      {/* RENDIMIENTO HOYO POR HOYO */}
+      {(() => {
+        const canchasJugadas = [...new Set(rounds.filter((r) => r.teams.some((t) => t.players.some((p) => p.id === me.id))).map((r) => r.courseId))]
+          .map((id) => courses.find((c) => c.id === id)).filter(Boolean);
+        if (!canchasJugadas.length) return null;
+        const elegida = holeCourse || canchasJugadas[0].id;
+        const hs = playerHoleStats(me.id, rounds, elegida, courses);
+        if (!hs) return null;
+        const peor = Math.max(...hs.hoyos.map((h) => (h.vsPar == null ? -99 : h.vsPar)));
+        return (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+              <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green }}>Hoyo por hoyo</div>
+              {canchasJugadas.length > 1 && (
+                <select style={{ ...inputStyle, width: "auto", padding: "7px 10px", marginBottom: 0 }} value={elegida} onChange={(e) => setHoleCourse(e.target.value)}>
+                  {canchasJugadas.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              )}
+            </div>
+            <Card style={{ padding: 18, marginBottom: 22, overflowX: "auto" }}>
+              <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 14 }}>
+                Promedio contra el par en {hs.course.name} · {hs.vueltas} {hs.vueltas === 1 ? "vuelta" : "vueltas"}. Las barras hacia arriba son los hoyos que te cuestan.
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 5, minWidth: 18 * 34 }}>
+                {hs.hoyos.map((h) => {
+                  const v = h.vsPar == null ? 0 : h.vsPar;
+                  const alto = Math.round((Math.abs(v) / Math.max(0.5, peor)) * 70);
+                  const esPeor = v > 0 && Math.abs(v - peor) < 1e-9;
+                  return (
+                    <div key={h.hoyo} style={{ textAlign: "center", flex: 1, minWidth: 29 }} title={`Hoyo ${h.hoyo} · par ${h.par} · SI ${h.si} · ${h.veces} vez(ces)`}>
+                      <div style={{ fontSize: 10.5, fontWeight: 800, color: v > 0 ? C.red : v < 0 ? "#3fa46a" : "#9aa69e" }}>{v > 0 ? "+" : ""}{v.toFixed(1)}</div>
+                      <div style={{ height: 74, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                        <div style={{ height: alto, background: esPeor ? C.red : v > 0 ? "rgba(180,69,47,.45)" : "#3fa46a", borderRadius: "4px 4px 0 0" }} />
+                      </div>
+                      <div style={{ fontSize: 11, fontWeight: 700, borderTop: `1px solid ${C.line}`, paddingTop: 3 }}>{h.hoyo}</div>
+                      <div style={{ fontSize: 9.5, color: "#9aa69e" }}>par {h.par}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          </>
+        );
+      })()}
+
+      {/* HISTORIAL DEL MEDAL */}
+      {(() => {
+        const medal = playerMedalHistory(me.id, rounds);
+        if (!medal.length) return null;
+        const ganados = medal.filter((m) => m.ganó).length;
+        const mejor = Math.min(...medal.map((m) => m.neto ?? Infinity));
+        return (
+          <>
+            <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Medal</div>
+            <Card style={{ overflow: "hidden", marginBottom: 22 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr .8fr .8fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
+                <div>Fecha</div><div style={{ textAlign: "right" }}>Neto</div><div style={{ textAlign: "center" }}>Resultado</div><div style={{ textAlign: "right" }}>Caminos</div>
+              </div>
+              {medal.map((m, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr .8fr .8fr", padding: "10px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+                  <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}</div><div style={{ fontSize: 11.5, color: "#9aa69e" }}>{m.date}</div></div>
+                  <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'" }}>{m.neto ?? "—"}</div>
+                  <div style={{ textAlign: "center", fontSize: 12.5 }}>{m.anulado ? <Chip tone="neutral">Anulado</Chip> : m.ganó ? <Chip tone="gold">🏆 Ganado</Chip> : "—"}</div>
+                  <div style={{ textAlign: "right", fontWeight: 700, color: m.tokens > 0 ? C.green : m.tokens < 0 ? C.red : "#9aa69e" }}>{fmtTokSigned(m.tokens)}</div>
+                </div>
+              ))}
+              <div style={{ padding: "11px 14px", borderTop: `2px solid ${C.green}`, background: C.creamDk, fontSize: 13, fontWeight: 700, color: C.green }}>
+                {ganados} {ganados === 1 ? "Medal ganado" : "Medales ganados"} de {medal.length} · mejor neto {Number.isFinite(mejor) ? mejor : "—"}
+              </div>
+            </Card>
+          </>
+        );
+      })()}
+
       {/* MOVIMIENTO DE HÁNDICAP */}
       {hcpHist.length > 0 && (
         <>
@@ -2174,7 +2401,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
 /* ---------------- GESTOR DE EVENTOS (inscripción → grupos → juego → consolidación) ---------------- */
 /* mode: "admin" = gestión desde la comunidad (sin llenado de scores);
    "play" = anotación de scores desde Iniciar Ronda. */
-function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onClose, mode = "admin", rounds = [] }) {
+function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onDeleteRound, onClose, mode = "admin", rounds = [] }) {
   const course = courses.find((c) => c.id === event.courseId) || courses[0];
   const admin = isAdmin(community, me.id);
   // _rev crece con cada cambio: en la fusión entre celulares gana la versión más nueva
@@ -2290,8 +2517,19 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     // Marca a los invitados: juegan en las cuentas del día pero no cuentan
     // para la money list acumulada de la comunidad.
     results.rows.forEach((r) => { if (guestIdSet.has(r.id)) r.guest = true; });
-    onSaveRound({ ...evObj, guests: eventGuests, results });
+    // correcciones: cuántas veces se reabrió y volvió a cerrar esta fecha.
+    // El _rev hace que la versión corregida gane en la fusión entre celulares.
+    const correcciones = (event.correcciones || 0);
+    onSaveRound({ ...evObj, guests: eventGuests, results, correcciones, _rev: correcciones + 1 });
     updateEvent({ status: "cerrado", resultsRoundId: event.id });
+  };
+  /* Reabrir una fecha ya cerrada para corregir un score mal anotado.
+     La ronda guardada se marca como borrada (la marca sí viaja a los demás)
+     y el evento vuelve a "en juego" con los scores tal como quedaron. */
+  const reabrir = () => {
+    if (!window.confirm(`¿Reabrir "${event.name}" para corregir?\n\nLos resultados actuales se quitan de la Money List hasta que vuelvas a consolidar.`)) return;
+    if (onDeleteRound) onDeleteRound(event.resultsRoundId || event.id);
+    updateEvent({ status: "jugando", resultsRoundId: null, correcciones: (event.correcciones || 0) + 1, reabiertoPor: me.id, reabiertoEl: new Date().toISOString() });
   };
 
   const Head = () => (
@@ -2728,6 +2966,17 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           ? <>Ronda cerrada. Los resultados y la tarjeta completa quedaron en <b style={{ color: C.green }}>Jugador (yo)</b>, para ti y para cada participante con cuenta.</>
           : <>Evento consolidado. Los resultados están en la pestaña <b style={{ color: C.green }}>Resultados</b> de la comunidad y en la Money List.</>}
       </Card>
+      {admin && (
+        <Card style={{ padding: 16, marginBottom: 14, border: `1.5px dashed ${C.gold}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <div style={{ fontSize: 13, color: "#5c6b63" }}>
+              ¿Apareció un score mal anotado? Puedes <b style={{ color: C.green }}>reabrir</b> la fecha, corregir la tarjeta y volver a consolidar.
+              {event.correcciones > 0 && <> · Ya se corrigió {event.correcciones} {event.correcciones === 1 ? "vez" : "veces"}.</>}
+            </div>
+            <Btn variant="ghost" onClick={reabrir}>↩︎ Reabrir para corregir</Btn>
+          </div>
+        </Card>
+      )}
       {roundSaved && (
         <>
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
@@ -2869,7 +3118,7 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
   );
 }
 
-function CommunityDetail({ community, rounds, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onBack, onStartRound, initialEventId }) {
+function CommunityDetail({ community, rounds, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onDeleteRound, onBack, onStartRound, initialEventId }) {
   const [tab, setTab] = useState(initialEventId ? "eventos" : "jugadores");
   const [openRound, setOpenRound] = useState(null);
   const [managingEventId, setManagingEventId] = useState(initialEventId || null);
@@ -2877,6 +3126,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
   const [editingRules, setEditingRules] = useState(false);
   const [evForm, setEvForm] = useState({ name: "", courseId: courses[0]?.id, date: new Date().toISOString().slice(0, 10) });
   const [rankSort, setRankSort] = useState("rank");
+  const [h2h, setH2h] = useState({ a: me.id, b: "" });
   const cur = community.currency;
   const commRounds = rounds.filter((r) => r.communityId === community.id);
   const list = communityMoneyList(community.id, rounds);
@@ -2962,6 +3212,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
         <Tab id="jugadores" label={`Jugadores (${community.members.length})${iAmAdmin && applicants.length ? " · " + applicants.length + "📩" : ""}`} />
         <Tab id="moneylist" label="Money List" />
         <Tab id="ranking" label="Ranking" />
+        <Tab id="caracara" label="Cara a cara" />
         {iAmAdmin && <Tab id="pozo" label="Pozo" />}
         <Tab id="eventos" label={`Eventos (${commEvents.length})`} />
         <Tab id="resultados" label={`Resultados (${commRounds.length})`} />
@@ -3137,6 +3388,74 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
         })()
       )}
 
+      {/* CARA A CARA: cómo le fue a dos jugadores en las fechas que compartieron */}
+      {tab === "caracara" && (() => {
+        const opciones = community.members.map((id) => ({ id, name: resolveName(id, players) })).sort((x, y) => x.name.localeCompare(y.name));
+        const sel = (k) => (e) => setH2h({ ...h2h, [k]: e.target.value });
+        const listo = h2h.a && h2h.b && h2h.a !== h2h.b;
+        const r = listo ? headToHead(h2h.a, h2h.b, rounds, community.id) : null;
+        const nA = resolveName(h2h.a, players), nB = resolveName(h2h.b, players);
+        return (
+          <div>
+            <Card style={{ padding: 18, marginBottom: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "end" }}>
+                <Field label="Jugador"><select style={inputStyle} value={h2h.a} onChange={sel("a")}>{opciones.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></Field>
+                <div style={{ paddingBottom: 18, fontWeight: 800, color: C.gold, fontFamily: "'Fraunces'" }}>vs</div>
+                <Field label="Contra">
+                  <select style={inputStyle} value={h2h.b} onChange={sel("b")}>
+                    <option value="">Elegir…</option>
+                    {opciones.filter((o) => o.id !== h2h.a).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                </Field>
+              </div>
+            </Card>
+            {!listo ? (
+              <Card style={{ padding: 22, color: "#7a8780" }}>Elige a los dos jugadores para comparar sus fechas en común.</Card>
+            ) : r.fechas === 0 ? (
+              <Card style={{ padding: 22, color: "#7a8780" }}>{nA} y {nB} todavía no han jugado una misma fecha en {community.name}.</Card>
+            ) : (
+              <div>
+                <Card style={{ padding: 18, marginBottom: 14 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 10, textAlign: "center" }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>{nA}</div>
+                      <div style={{ fontFamily: "'Fraunces'", fontSize: 34, fontWeight: 900, color: r.aGanó >= r.bGanó ? C.green : "#9aa69e" }}>{r.aGanó}</div>
+                      <div style={{ fontSize: 13, color: r.aMoney >= 0 ? C.green : C.red, fontWeight: 700 }}>{money(r.aMoney, cur)}</div>
+                    </div>
+                    <div style={{ color: "#9aa69e", fontSize: 12.5 }}>
+                      <div style={{ fontWeight: 700 }}>{r.fechas} {r.fechas === 1 ? "fecha" : "fechas"}</div>
+                      {r.empates > 0 && <div>{r.empates} {r.empates === 1 ? "empate" : "empates"}</div>}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>{nB}</div>
+                      <div style={{ fontFamily: "'Fraunces'", fontSize: 34, fontWeight: 900, color: r.bGanó > r.aGanó ? C.green : "#9aa69e" }}>{r.bGanó}</div>
+                      <div style={{ fontSize: 13, color: r.bMoney >= 0 ? C.green : C.red, fontWeight: 700 }}>{money(r.bMoney, cur)}</div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: "#7a8780", textAlign: "center", marginTop: 10 }}>Fechas en las que cada uno terminó por delante del otro en plata.</div>
+                </Card>
+                <Card style={{ overflow: "hidden" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
+                    <div>Fecha</div><div style={{ textAlign: "right" }}>{nA.split(" ")[0]}</div><div style={{ textAlign: "right" }}>{nB.split(" ")[0]}</div>
+                  </div>
+                  {r.filas.map((f, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", padding: "10px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+                      <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{f.name}</div><div style={{ fontSize: 11.5, color: "#9aa69e" }}>{f.date}</div></div>
+                      <div style={{ textAlign: "right", fontWeight: f.aMoney > f.bMoney ? 800 : 500, color: f.aMoney >= 0 ? C.green : C.red }}>
+                        {money(f.aMoney, cur)}<div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{f.aGross ?? "—"} golpes</div>
+                      </div>
+                      <div style={{ textAlign: "right", fontWeight: f.bMoney > f.aMoney ? 800 : 500, color: f.bMoney >= 0 ? C.green : C.red }}>
+                        {money(f.bMoney, cur)}<div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{f.bGross ?? "—"} golpes</div>
+                      </div>
+                    </div>
+                  ))}
+                </Card>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* POZO: seguimiento interno, solo para administradores */}
       {tab === "pozo" && iAmAdmin && (
         pozo.rows.length === 0 ? <Card style={{ padding: 22, color: "#7a8780" }}>Todavía no hay fechas jugadas en esta comunidad.</Card> : (() => {
@@ -3180,7 +3499,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 
       {tab === "eventos" && (
         managingEvent ? (
-          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} rounds={rounds} onSaveRound={onSaveRound} onClose={() => setManagingEventId(null)} />
+          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} rounds={rounds} onSaveRound={onSaveRound} onDeleteRound={onDeleteRound} onClose={() => setManagingEventId(null)} />
         ) : creatingEvent ? (
           <Card style={{ padding: 22, maxWidth: 520 }}>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 20, color: C.green, marginBottom: 14 }}>Nuevo evento</div>
@@ -3345,10 +3664,31 @@ function CourseEditor({ course, onCancel, onSave }) {
     si: course ? course.strokes[i] : i + 1,
   })));
   const [err, setErr] = useState("");
+  const [pegado, setPegado] = useState("");
+  const [pegadoMsg, setPegadoMsg] = useState("");
   const setH = (i, k, v) => setHoles(holes.map((h, j) => (j === i ? { ...h, [k]: v } : h)));
   const parTotal = holes.reduce((s, h) => s + (parseInt(h.par) || 0), 0);
   const siList = holes.map((h) => parseInt(h.si));
   const siValid = new Set(siList).size === 18 && Math.min(...siList) === 1 && Math.max(...siList) === 18;
+  // Qué le falta o le sobra al stroke index, para poder corregirlo de un vistazo
+  const siFaltan = Array.from({ length: 18 }, (_, i) => i + 1).filter((n) => !siList.includes(n));
+  const siRepetidos = [...new Set(siList.filter((n, i) => siList.indexOf(n) !== i))];
+
+  /* Cargar una cancha desde la tarjeta del club: se pegan dos filas de 18
+     números (pares y stroke index), separados por espacios, comas o tabs. */
+  const aplicarPegado = () => {
+    const filas = pegado.split(/\n+/).map((f) => (f.match(/-?\d+/g) || []).map(Number)).filter((f) => f.length);
+    const dieciocho = filas.filter((f) => f.length === 18);
+    if (dieciocho.length < 2) {
+      const nums = filas.flat();
+      if (nums.length === 36) { dieciocho.push(nums.slice(0, 18), nums.slice(18)); }
+      else { setPegadoMsg(`Necesito dos filas de 18 números (pares y stroke index). Encontré ${nums.length} números.`); return; }
+    }
+    const [pars, sis] = dieciocho;
+    setHoles(pars.map((p, i) => ({ par: p, si: sis[i] })));
+    setPegadoMsg(`✓ Cargados 18 hoyos · par ${pars.reduce((s, p) => s + p, 0)}`);
+    setErr("");
+  };
 
   const save = () => {
     if (!name.trim()) { setErr("Pon un nombre."); return; }
@@ -3374,9 +3714,28 @@ function CourseEditor({ course, onCancel, onSave }) {
           <Field label="Nombre"><input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej: Golf Los Inkas" /></Field>
           <Field label="Ubicación"><input style={inputStyle} value={loc} onChange={(e) => setLoc(e.target.value)} placeholder="Ej: Lima · Perú" /></Field>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "6px 0 10px" }}>
+        {/* Carga rápida desde la tarjeta del club */}
+        <div style={{ padding: 12, background: C.cream, borderRadius: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, marginBottom: 6 }}>Cargar desde la tarjeta del club</div>
+          <div style={{ fontSize: 12.5, color: "#7a8780", marginBottom: 8, lineHeight: 1.55 }}>
+            Pega dos filas de 18 números: primero los <b>pares</b> y debajo el <b>stroke index</b>. Sirve copiar de un Excel o escribirlos separados por espacios.
+          </div>
+          <textarea rows={3} value={pegado} onChange={(e) => { setPegado(e.target.value); setPegadoMsg(""); }}
+            placeholder={"4 4 5 3 4 3 4 5 4 4 4 4 3 5 4 5 3 4\n9 13 5 15 1 17 11 3 7 8 10 14 18 12 2 4 16 6"}
+            style={{ ...inputStyle, fontFamily: "monospace", fontSize: 13, minHeight: 70, resize: "vertical" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <Btn variant="ghost" disabled={!pegado.trim()} onClick={aplicarPegado}>Rellenar hoyos</Btn>
+            {pegadoMsg && <span style={{ fontSize: 12.5, fontWeight: 600, color: pegadoMsg.startsWith("✓") ? C.green : C.red }}>{pegadoMsg}</span>}
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "6px 0 10px", flexWrap: "wrap", gap: 8 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green, textTransform: "uppercase", letterSpacing: .4 }}>Hoyos</div>
-          <Chip tone={parTotal === 72 ? "green" : "neutral"}>Par total {parTotal}</Chip>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Chip tone={parTotal === 72 ? "green" : "neutral"}>Par total {parTotal}</Chip>
+            <Chip tone={siValid ? "green" : "gold"}>
+              {siValid ? "Stroke index correcto" : siRepetidos.length ? `SI repetido: ${siRepetidos.join(", ")}` : `Falta el SI ${siFaltan.join(", ")}`}
+            </Chip>
+          </div>
         </div>
         <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 12 }}>
           <table style={{ borderCollapse: "collapse", minWidth: 34 * 19 + 90 }}>
@@ -3387,11 +3746,11 @@ function CourseEditor({ course, onCancel, onSave }) {
               </tr>
               <tr>
                 <td style={{ ...cell, fontWeight: 700, fontSize: 12.5, textAlign: "left", padding: "6px 8px", background: C.cream }}>Par</td>
-                {holes.map((h, i) => <td key={i} style={cell}><input style={numInput} value={h.par} onChange={(e) => setH(i, "par", e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))} /></td>)}
+                {holes.map((h, i) => <td key={i} style={cell}><input style={numInput} inputMode="numeric" pattern="[0-9]*" value={h.par} onChange={(e) => setH(i, "par", e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))} /></td>)}
               </tr>
               <tr>
                 <td style={{ ...cell, fontWeight: 700, fontSize: 12.5, textAlign: "left", padding: "6px 8px", background: C.cream }}>Stroke Index</td>
-                {holes.map((h, i) => <td key={i} style={{ ...cell, background: siValid ? "#fff" : "rgba(180,69,47,.06)" }}><input style={numInput} value={h.si} onChange={(e) => setH(i, "si", e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))} /></td>)}
+                {holes.map((h, i) => <td key={i} style={{ ...cell, background: siValid ? "#fff" : "rgba(180,69,47,.06)" }}><input style={numInput} inputMode="numeric" pattern="[0-9]*" value={h.si} onChange={(e) => setH(i, "si", e.target.value.replace(/[^0-9]/g, "") === "" ? "" : parseInt(e.target.value.replace(/[^0-9]/g, "")))} /></td>)}
               </tr>
             </tbody>
           </table>
@@ -3435,7 +3794,7 @@ function CoursesView({ courses, setCourses, rounds, canManage }) {
               {canManage && (
                 <div style={{ display: "flex", gap: 8 }}>
                   <Btn variant="ghost" onClick={() => setEditing(c)}>Editar</Btn>
-                  {usedCount(c.id) === 0 && <Btn variant="danger" onClick={() => { if (window.confirm(`¿Eliminar "${c.name}"?`)) setCourses((prev) => prev.filter((x) => x.id !== c.id)); }}>Eliminar</Btn>}
+                  {usedCount(c.id) === 0 && <Btn variant="danger" onClick={() => { if (window.confirm(`¿Eliminar "${c.name}"?`)) setCourses((prev) => prev.map((x) => (x.id === c.id ? marcarBorrado(x) : x))); }}>Eliminar</Btn>}
                 </div>
               )}
             </div>
@@ -3462,13 +3821,19 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [players, setPlayers] = useState([]);
   const [communities, setCommunities] = useState([]);
-  const [courses, setCourses] = useState([]);
-  const [rounds, setRounds] = useState([]);
+  // El estado guarda TODO (incluido lo marcado como borrado, que hay que
+  // seguir subiendo para que la marca llegue a los demás); la app trabaja con
+  // la versión sin lo borrado.
+  const [coursesAll, setCourses] = useState([]);
+  const [roundsAll, setRounds] = useState([]);
   const [me, setMe] = useState(null);
   const [view, setView] = useState("home");
   const [openCommunity, setOpenCommunity] = useState(null);
   const [roundCommunity, setRoundCommunity] = useState(null);
-  const [events, setEvents] = useState([]);
+  const [eventsAll, setEvents] = useState([]);
+  const courses = useMemo(() => vivos(coursesAll), [coursesAll]);
+  const rounds = useMemo(() => vivos(roundsAll), [roundsAll]);
+  const events = useMemo(() => vivos(eventsAll), [eventsAll]);
   const savedSnap = useRef({}); // última versión subida/cargada de cada colección
   const [quickRound, setQuickRound] = useState(false); // "Iniciar Ronda": true = ronda casual sin evento
   const [eventJump, setEventJump] = useState(null);    // id de evento a abrir directamente en la comunidad
@@ -3556,9 +3921,28 @@ export default function App() {
   };
   useEffect(() => { persist("gb_players_v2", players); }, [players, canWrite]);
   useEffect(() => { persist("gb_comm_v2", communities); }, [communities, canWrite]);
-  useEffect(() => { persist("gb_courses_v2", courses); }, [courses, canWrite]);
-  useEffect(() => { persist("gb_rounds_v2", rounds); }, [rounds, canWrite]);
-  useEffect(() => { persist("gb_events_v1", events); }, [events, canWrite]);
+  useEffect(() => { persist("gb_courses_v2", coursesAll); }, [coursesAll, canWrite]);
+  useEffect(() => { persist("gb_rounds_v2", roundsAll); }, [roundsAll, canWrite]);
+  useEffect(() => { persist("gb_events_v1", eventsAll); }, [eventsAll, canWrite]);
+
+  // Avisos de arriba: guardado pendiente/fallido y versión nueva publicada.
+  // Si hay una versión nueva y NO estás anotando, la app se actualiza sola;
+  // anotando nunca: una recarga a mitad de una tarjeta sería peor.
+  const sync = useSyncStatus();
+  const versionNueva = useVersionNueva();
+  useEffect(() => {
+    if (!versionNueva) return;
+    if (view === "round" || syncStatus.pendientes.size || syncStatus.fallidas.size) return;
+    const t = setTimeout(() => window.location.reload(), 4000);
+    return () => clearTimeout(t);
+  }, [versionNueva, view]);
+
+  // Guardar una ronda: si ya existía (una fecha corregida) se reemplaza en su
+  // sitio; si no, entra al principio del historial.
+  const saveRound = (round) => setRounds((prev) => (prev.some((r) => r.id === round.id) ? prev.map((r) => (r.id === round.id ? round : r)) : [round, ...prev]));
+  // Borrar una ronda: se marca como borrada para que la marca llegue a todos
+  // los celulares en vez de que uno desactualizado la resucite.
+  const deleteRound = (roundId) => setRounds((prev) => prev.map((r) => (r.id === roundId ? marcarBorrado(r) : r)));
 
   // Edición del propio perfil: actualiza el registro del jugador (con _rev
   // para que la fusión lo propague a los demás celulares).
@@ -3628,6 +4012,32 @@ export default function App() {
   };
   const EVJUMP_STATUS = { inscripcion: ["Inscripción abierta", "gold"], grupos: ["Armando grupos", "gold"], jugando: ["En juego", "green"] };
 
+  const AvisosBarra = () => {
+    if (!CLOUD && !versionNueva) return null;
+    const hayFallo = sync.fallidas > 0;
+    if (!hayFallo && !sync.subiendo && !versionNueva) return null;
+    const [fondo, texto] = hayFallo ? ["#b4452f", "#fff"] : versionNueva ? [C.gold, "#2c2003"] : ["#143b2c", C.lime];
+    return (
+      <div style={{ background: fondo, color: texto, padding: "9px 14px", fontSize: 13.5, fontWeight: 600,
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap",
+        fontFamily: "'Spline Sans',sans-serif", position: "sticky", top: 0, zIndex: 25 }}>
+        {hayFallo ? (
+          <>
+            <span>⚠️ No se pudo guardar en la nube ({sync.fallidas} {sync.fallidas === 1 ? "cambio" : "cambios"}). Lo anotado sigue en este celular.</span>
+            <button onClick={reintentarGuardado} style={{ border: "1px solid rgba(255,255,255,.6)", background: "transparent", color: texto, borderRadius: 8, padding: "4px 12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Reintentar</button>
+          </>
+        ) : versionNueva ? (
+          <>
+            <span>✨ Hay una versión nueva de la app.</span>
+            <button onClick={() => window.location.reload()} style={{ border: "1px solid rgba(0,0,0,.35)", background: "transparent", color: texto, borderRadius: 8, padding: "4px 12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Actualizar ahora</button>
+          </>
+        ) : (
+          <span>⏳ Guardando…</span>
+        )}
+      </div>
+    );
+  };
+
   const NavBtn = ({ id, label }) => (
     <button onClick={() => { setView(id); setOpenCommunity(null); setQuickRound(false); setEventJump(null); setPlayEventId(null); }} style={{
       border: "none", cursor: "pointer", background: view === id ? "rgba(200,230,160,.16)" : "transparent",
@@ -3644,6 +4054,7 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "'Spline Sans',sans-serif", color: C.ink, background: C.cream, minHeight: "100%" }}>
+      <AvisosBarra />
       {/* TOP BAR */}
       <div style={{ background: C.greenDeep, padding: isMobile ? "10px 14px" : "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, position: "sticky", top: 0, zIndex: 20 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
@@ -3749,7 +4160,8 @@ export default function App() {
             courses={courses}
             initialEventId={eventJump}
             onUpdateCommunity={(uc) => { const bumped = { ...uc, _rev: (uc._rev || 0) + 1 }; setCommunities((prev) => prev.map((x) => (x.id === bumped.id ? bumped : x))); setOpenCommunity(bumped); }}
-            onSaveRound={(round) => setRounds((r) => [round, ...r])}
+            onSaveRound={saveRound}
+            onDeleteRound={deleteRound}
             onBack={() => { setOpenCommunity(null); setEventJump(null); }}
             onStartRound={() => { setRoundCommunity(openCommunity.id); setOpenCommunity(null); setView("round"); }}
           />
@@ -3761,7 +4173,7 @@ export default function App() {
           if (!ev || !comm) return null;
           return (
             <EventManager mode="play" event={ev} community={comm} courses={courses} players={[...players, ...(ev.guests || [])]} me={me}
-              setEvents={setEvents} rounds={rounds} onSaveRound={(round) => setRounds((r) => [round, ...r])} onClose={() => setPlayEventId(null)} />
+              setEvents={setEvents} rounds={rounds} onSaveRound={saveRound} onDeleteRound={deleteRound} onClose={() => setPlayEventId(null)} />
           );
         })()}
         {view === "round" && !playEventId && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (

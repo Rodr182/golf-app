@@ -49,6 +49,35 @@ a la siguiente con **Siguiente tarjeta**, y cuando todas están completas se
 calculan los resultados. Jugando solo o en pareja no hay apuestas: se guarda
 como *ronda simple* (tarjeta y estadísticas).
 
+## Si se cae la señal en la cancha
+
+Lo que se anota se guarda **primero en el propio celular** y después se sube.
+Si la subida falla, la app **lo dice** con una barra arriba («No se pudo
+guardar…») y un botón para reintentar; además reintenta sola cinco veces con
+esperas crecientes. Al volver a entrar sin señal, la app arranca con la copia
+del celular en vez de aparecer vacía.
+
+Cada compilación lleva un sello (`version.json`). Si el celular tiene una
+versión vieja en caché, la app lo detecta y se actualiza — nunca en medio de
+una tarjeta: mientras anotas solo avisa.
+
+## Corregir una fecha ya cerrada
+
+En un evento consolidado, el administrador tiene **↩︎ Reabrir para corregir**:
+la fecha sale de la Money List, se corrige la tarjeta y se vuelve a
+consolidar. Queda registrado cuántas veces se corrigió.
+
+Los borrados (una cancha, una fecha reabierta) no se eliminan de la base: se
+**marcan** como borrados. Así la marca viaja a los demás celulares en vez de
+que uno desactualizado resucite lo eliminado.
+
+## Copias de seguridad
+
+La acción `Copia de seguridad` corre sola los domingos y también a mano. Deja
+un archivo descargable con todas las colecciones (90 días de retención). Las
+instrucciones para restaurar están al inicio de
+`.github/workflows/backup.yml`.
+
 ## Compartir resultados por WhatsApp
 
 Toda ronda ya cerrada trae **📲 Compartir por WhatsApp**: al consolidar (en la
@@ -72,8 +101,15 @@ Dentro de cada comunidad, además de la Money List:
   y Caja 10% por defecto, con nombres y porcentajes editables— más el
   acumulado de la temporada.
 
+- **Cara a cara**: compara a dos miembros en las fechas que jugaron juntos —
+  cuántas ganó cada uno, cuánta plata y los golpes de cada día.
+
 Ambos cálculos replican las hojas `Normalizacion` y `POZO` de la planilla que
 el grupo llevaba en Excel.
+
+En el perfil, además de las tarjetas y el hándicap, están el **rendimiento
+hoyo por hoyo** (promedio contra el par en cada cancha, para ver qué hoyos
+cuestan más) y el **historial del Medal**.
 
 ## Borrar todos los datos (volver a cero)
 

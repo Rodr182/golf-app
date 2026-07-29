@@ -1,0 +1,58 @@
+# Copia de seguridad de los datos de la app (solo lectura).
+# Se ejecuta sola todos los domingos y también se puede lanzar a mano.
+# El resultado queda como "artifact" descargable del propio run, 90 días.
+#
+# Para RESTAURAR: descarga el .json del run, ábrelo, y en el SQL Editor de
+# Supabase ejecuta, por cada colección que quieras devolver:
+#   insert into public.collections (key, value, updated_at)
+#   values ('gb_rounds_v2', '<pega aquí el value>'::jsonb, now())
+#   on conflict (key) do update set value = excluded.value, updated_at = now();
+# Después sube la época para que los celulares abiertos se recarguen:
+#   insert into public.collections (key, value, updated_at)
+#   values ('gb_epoch', to_jsonb(extract(epoch from now())::bigint), now())
+#   on conflict (key) do update set value = excluded.value, updated_at = now();
+name: Copia de seguridad
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"   # domingos 06:00 UTC (01:00 en Lima)
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exportar colecciones
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
+
+          mkdir -p copia
+          fecha=$(date -u +%Y-%m-%d)
+          q "select key, value, updated_at from public.collections order by key;" > "copia/collections-$fecha.json"
+
+          # Verificación: el archivo debe traer datos, no un error de la API
+          if ! jq -e 'type=="array" and length>0' "copia/collections-$fecha.json" >/dev/null; then
+            echo "ERROR: la copia salió vacía o con error:"; head -c 500 "copia/collections-$fecha.json"; exit 1
+          fi
+          echo "Colecciones respaldadas:"
+          jq -r '.[] | "  \(.key)\t\(.value | if type=="array" then length else 1 end) elemento(s)"' "copia/collections-$fecha.json"
+
+          # Las cuentas no se respaldan aquí (las gestiona Supabase Auth),
+          # pero se deja constancia de cuántas había.
+          q "select count(*) as cuentas from auth.users;" > "copia/cuentas-$fecha.json"
+          echo "Cuentas: $(jq -r '.[0].cuentas' "copia/cuentas-$fecha.json")"
+
+      - name: Guardar la copia
+        uses: actions/upload-artifact@v4
+        with:
+          name: copia-datos
+          path: copia/
+          retention-days: 90
