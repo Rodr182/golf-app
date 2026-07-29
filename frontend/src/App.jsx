@@ -2532,6 +2532,20 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     updateEvent({ status: "jugando", resultsRoundId: null, correcciones: (event.correcciones || 0) + 1, reabiertoPor: me.id, reabiertoEl: new Date().toISOString() });
   };
 
+  /* Eliminar una ronda empezada: puede hacerlo quien la creó (y los admins de
+     la comunidad). Se marca como borrada para que desaparezca también en los
+     demás celulares, en vez de reaparecer con la sincronización. */
+  const puedeEliminar = event.status !== "cerrado" && (event.createdBy === me.id || admin);
+  const hayScores = groups.some((g) => Object.values(g.scores || {}).some((arr) => (arr || []).some((v) => v !== "" && v != null)));
+  const eliminarEvento = () => {
+    const aviso = hayScores
+      ? `¿Eliminar "${event.name}"?\n\nYa hay scores anotados y se perderán. Esto no se puede deshacer.`
+      : `¿Eliminar "${event.name}"?\n\nSe quita para todos los participantes.`;
+    if (!window.confirm(aviso)) return;
+    setEvents((prev) => prev.map((e) => (e.id === event.id ? marcarBorrado(e) : e)));
+    onClose();
+  };
+
   const Head = () => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
       <div>
@@ -2539,7 +2553,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         <div style={{ color: "#7a8780", fontSize: 13.5, marginTop: 4 }}>{course?.name} · {event.date}</div>
         <div style={{ marginTop: 8 }}><Chip tone={event.status === "cerrado" ? "neutral" : "gold"}>{STATUS[event.status]}</Chip></div>
       </div>
-      <Btn variant="ghost" onClick={onClose}>{mode === "play" ? "← Volver" : "← Volver a eventos"}</Btn>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {puedeEliminar && <Btn variant="danger" onClick={eliminarEvento}>🗑 Eliminar</Btn>}
+        <Btn variant="ghost" onClick={onClose}>{mode === "play" ? "← Volver" : "← Volver a eventos"}</Btn>
+      </div>
     </div>
   );
 
@@ -2971,6 +2988,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
             <div style={{ fontSize: 13, color: "#5c6b63" }}>
               ¿Apareció un score mal anotado? Puedes <b style={{ color: C.green }}>reabrir</b> la fecha, corregir la tarjeta y volver a consolidar.
+              Si lo que quieres es borrarla del todo, reábrela y usa <b style={{ color: C.green }}>🗑 Eliminar</b>.
               {event.correcciones > 0 && <> · Ya se corrigió {event.correcciones} {event.correcciones === 1 ? "vez" : "veces"}.</>}
             </div>
             <Btn variant="ghost" onClick={reabrir}>↩︎ Reabrir para corregir</Btn>

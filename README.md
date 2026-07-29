@@ -61,6 +61,13 @@ Cada compilación lleva un sello (`version.json`). Si el celular tiene una
 versión vieja en caché, la app lo detecta y se actualiza — nunca en medio de
 una tarjeta: mientras anotas solo avisa.
 
+## Eliminar una ronda empezada
+
+Dentro de una ronda o evento que todavía no se consolidó, **🗑 Eliminar**
+(arriba a la derecha) la borra para todos. Solo lo ve **quien la creó** y los
+administradores de la comunidad; si ya hay scores anotados, avisa antes. Para
+borrar una fecha ya cerrada hay que reabrirla primero.
+
 ## Corregir una fecha ya cerrada
 
 En un evento consolidado, el administrador tiene **↩︎ Reabrir para corregir**:
