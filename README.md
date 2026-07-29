@@ -35,6 +35,18 @@ Para empezar: crea tu cuenta → **Comunidades → + Nueva comunidad** → defin
 las reglas → comparte el enlace de la app con tu grupo para que postulen.
 También puedes jugar sin comunidad desde **Iniciar Ronda → Ronda libre**.
 
+## Probar sin tocar la base de datos real
+
+```bash
+cd frontend && npm run build:local && npm run preview
+```
+
+`build:local` compila en modo local (datos solo en el navegador). **Nunca hay
+que vaciar `src/config.js` para probar**: si ese archivo vacío llega al
+repositorio, el despliegue publica una app sin base de datos y nadie puede
+iniciar sesión. El flujo de publicación verifica esto y se detiene antes de
+publicar si faltan las credenciales.
+
 ## Rondas fuera de un evento
 
 Desde **Iniciar Ronda** se puede armar una ronda suelta, con o sin comunidad

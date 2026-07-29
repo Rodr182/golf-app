@@ -5,7 +5,11 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 /* Cliente Supabase. Si config.js no tiene credenciales, la app corre en
    MODO LOCAL (datos en el navegador). Con credenciales, corre en MODO NUBE:
    cuentas seguras con Supabase Auth y datos compartidos entre todos. */
-const sb = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+/* Para probar en local NUNCA se vacía config.js: si ese archivo vacío llega
+   al repositorio, el despliegue publica una app sin base de datos y nadie
+   puede entrar a su cuenta. Se usa `npm run build:local`. */
+const FORZAR_LOCAL = import.meta.env.VITE_LOCAL === "1";
+const sb = !FORZAR_LOCAL && SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const CLOUD = !!sb;
 
 /* ============================================================
