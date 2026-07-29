@@ -35,8 +35,11 @@ jobs:
           echo "== Comunidades =="
           q "select c->>'name' as nombre, jsonb_array_length(c->'members') as miembros from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
 
-          echo "== Jugadores registrados =="
-          q "select p->>'name' as nombre, p->>'email' as email from public.collections, jsonb_array_elements(value) p where key='gb_players_v2';"
+          echo "== Jugadores registrados (y si tienen hándicap) =="
+          q "select p->>'name' as nombre, p->>'email' as email, p->>'hcp' as hcp from public.collections, jsonb_array_elements(value) p where key='gb_players_v2';"
+
+          echo "== Cuántos NO tienen hándicap (jugarían a 0) =="
+          q "select count(*) filter (where p->>'hcp' is null or p->>'hcp'='') as sin_handicap, count(*) as total from public.collections, jsonb_array_elements(value) p where key='gb_players_v2';"
 
           echo "== Cuentas en Supabase Auth =="
           q "select email, created_at from auth.users order by created_at;"
