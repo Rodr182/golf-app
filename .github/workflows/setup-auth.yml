@@ -1,0 +1,49 @@
+# Configura en Supabase la dirección a la que vuelve el enlace del correo
+# de "recuperar contraseña". Sin esto, el enlace apunta a localhost y no
+# funciona para nadie. Se ejecuta a mano, y es seguro repetirlo.
+name: Configurar recuperacion de contrasena
+
+on:
+  workflow_dispatch:
+    inputs:
+      url_app:
+        description: 'Direccion publica de la app'
+        required: true
+        default: 'https://rodr182.github.io/golf-app/'
+        type: string
+
+permissions: {}
+
+jobs:
+  auth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configurar
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          URL_APP: ${{ inputs.url_app }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          echo "Proyecto: $ref"
+
+          echo "== Antes =="
+          api "https://api.supabase.com/v1/projects/$ref/config/auth" \
+            | jq '{site_url, uri_allow_list, mailer_autoconfirm, disable_signup, mailer_otp_exp}'
+
+          # Se permite tanto la direccion con barra final como sin ella
+          sin_barra="${URL_APP%/}"
+          lista="$sin_barra,$sin_barra/"
+          api -X PATCH "https://api.supabase.com/v1/projects/$ref/config/auth" \
+            -d "$(jq -n --arg s "$URL_APP" --arg l "$lista" '{site_url:$s, uri_allow_list:$l}')" > /dev/null
+
+          echo "== Despues =="
+          api "https://api.supabase.com/v1/projects/$ref/config/auth" \
+            | jq '{site_url, uri_allow_list, mailer_autoconfirm}'
+
+          echo ""
+          echo "LISTO. El enlace de recuperacion volvera a: $URL_APP"
+          echo "Nota: el correo lo envia el servicio integrado de Supabase, que"
+          echo "tiene un limite de pocos envios por hora y a veces cae en spam."

@@ -35,6 +35,17 @@ Para empezar: crea tu cuenta → **Comunidades → + Nueva comunidad** → defin
 las reglas → comparte el enlace de la app con tu grupo para que postulen.
 También puedes jugar sin comunidad desde **Iniciar Ronda → Ronda libre**.
 
+## Si olvidaste tu contraseña
+
+En la pantalla de inicio de sesión: **¿Olvidaste tu contraseña?** → escribes
+tu email → llega un correo con un enlace → al abrirlo, la app pide la
+contraseña nueva. El enlace vence a la hora.
+
+El correo lo envía el servicio integrado de Supabase, que **limita los envíos
+por hora** y a veces cae en spam. Una única vez hay que ejecutar la acción
+`Configurar recuperacion de contrasena` (pestaña Actions) para que el enlace
+del correo vuelva a la dirección pública de la app en vez de a `localhost`.
+
 ## Probar sin tocar la base de datos real
 
 ```bash

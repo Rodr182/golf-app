@@ -966,11 +966,98 @@ function Field({ label, children }) {
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${C.line}`, background: "#fff", fontFamily: "'Spline Sans',sans-serif", fontSize: 15, color: C.ink, outline: "none" };
 
 /* ---------------- AUTH ---------------- */
+/* Quita el token de la barra de direcciones para que no quede a la vista
+   ni se reutilice si alguien vuelve atrás en el navegador. */
+const limpiarHash = () => {
+  try { window.history.replaceState(null, "", window.location.pathname + window.location.search.replace(/[?&]type=recovery[^&]*/, "")); } catch {}
+};
+
+/* Pantalla para elegir la contraseña nueva tras abrir el enlace del correo */
+function NuevaPassword({ onListo }) {
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async () => {
+    setErr("");
+    if (pass.length < 6) { setErr("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (pass !== pass2) { setErr("Las contraseñas no coinciden."); return; }
+    setGuardando(true);
+    const { error } = await sb.auth.updateUser({ password: pass });
+    setGuardando(false);
+    if (error) {
+      setErr(/expired|invalid/i.test(error.message)
+        ? "El enlace ya venció. Pide uno nuevo desde «¿Olvidaste tu contraseña?»."
+        : "No se pudo cambiar: " + error.message);
+      return;
+    }
+    setOk(true);
+  };
+
+  return (
+    <div style={{ minHeight: "100%", display: "grid", placeItems: "center", padding: "40px 16px",
+      background: `radial-gradient(120% 90% at 80% -10%, ${C.green} 0%, ${C.greenDeep} 55%, #061812 100%)` }}>
+      <div style={{ width: "100%", maxWidth: 420 }}>
+        <div style={{ textAlign: "center", marginBottom: 26 }}>
+          <div style={{ fontFamily: "'Fraunces',serif", fontWeight: 900, fontSize: 46, color: C.cream, lineHeight: 1, letterSpacing: -1 }}>
+            Golf<span style={{ color: C.gold }}>Buddy</span>
+          </div>
+        </div>
+        <Card style={{ padding: 26 }}>
+          {ok ? (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 34 }}>✓</div>
+              <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 20, color: C.green, margin: "6px 0 8px" }}>Contraseña actualizada</div>
+              <div style={{ fontSize: 13.5, color: "#6b7a72", marginBottom: 18 }}>Ya puedes usar la app con tu contraseña nueva.</div>
+              <Btn onClick={onListo} style={{ width: "100%" }}>Continuar</Btn>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 20, color: C.green, marginBottom: 6 }}>Elige tu contraseña nueva</div>
+              <div style={{ fontSize: 13, color: "#6b7a72", marginBottom: 16 }}>Mínimo 6 caracteres.</div>
+              <Field label="Contraseña nueva*"><input style={inputStyle} type="password" value={pass} onChange={(e) => setPass(e.target.value)} /></Field>
+              <Field label="Repetir contraseña*"><input style={inputStyle} type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} /></Field>
+              {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
+              <Btn onClick={guardar} disabled={guardando} style={{ width: "100%" }}>{guardando ? "Guardando…" : "Guardar contraseña"}</Btn>
+            </>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function Auth({ onAuth, players, setPlayers }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login");   // login | signup | recuperar
   const [f, setF] = useState({ name: "", last: "", email: "", birth: "", pass: "", pass2: "", hcp: "" });
   const [err, setErr] = useState("");
+  const [aviso, setAviso] = useState("");      // mensaje verde (recuperación enviada)
+  const [enviando, setEnviando] = useState(false);
   const upd = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  /* Recuperar contraseña: Supabase manda un correo con un enlace de vuelta a
+     la app; al abrirlo se muestra la pantalla para elegir la nueva clave. */
+  const recuperar = async () => {
+    setErr(""); setAviso("");
+    const email = f.email.trim();
+    if (!email) { setErr("Escribe tu email para enviarte el enlace."); return; }
+    if (!CLOUD) { setErr("En modo local no hay recuperación por correo: las cuentas viven solo en este navegador."); return; }
+    setEnviando(true);
+    try {
+      const volverA = window.location.origin + window.location.pathname;
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: volverA });
+      // No se distingue si el email existe o no: decirlo permitiría averiguar
+      // quién tiene cuenta. El mensaje es el mismo en ambos casos.
+      if (error && /rate|limit|seconds/i.test(error.message)) {
+        setErr("Ya se envió un correo hace poco. Espera unos minutos y vuelve a intentar.");
+      } else {
+        setAviso(`Si ${email} tiene una cuenta, le llegó un correo con el enlace para cambiar la contraseña. Revisa también la carpeta de spam.`);
+      }
+    } catch { setErr("No se pudo enviar el correo. Revisa tu conexión."); }
+    setEnviando(false);
+  };
 
   const submit = async () => {
     setErr("");
@@ -1020,19 +1107,42 @@ function Auth({ onAuth, players, setPlayers }) {
         <Card style={{ padding: 26 }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 20, background: C.creamDk, borderRadius: 12, padding: 4 }}>
             {["login", "signup"].map((m) => (
-              <button key={m} onClick={() => { setMode(m); setErr(""); }} style={{
+              <button key={m} onClick={() => { setMode(m); setErr(""); setAviso(""); }} style={{
                 flex: 1, border: "none", cursor: "pointer", padding: "9px", borderRadius: 9, fontWeight: 700, fontSize: 14,
-                fontFamily: "'Spline Sans',sans-serif", background: mode === m ? C.green : "transparent", color: mode === m ? C.cream : C.green }}>
+                fontFamily: "'Spline Sans',sans-serif", background: mode === m || (m === "login" && mode === "recuperar") ? C.green : "transparent",
+                color: mode === m || (m === "login" && mode === "recuperar") ? C.cream : C.green }}>
                 {m === "login" ? "Iniciar sesión" : "Crear cuenta"}
               </button>
             ))}
           </div>
+          {/* RECUPERAR CONTRASEÑA */}
+          {mode === "recuperar" && (
+            <div>
+              <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 19, color: C.green, marginBottom: 6 }}>Recuperar contraseña</div>
+              <div style={{ fontSize: 13, color: "#6b7a72", marginBottom: 14, lineHeight: 1.6 }}>
+                Escribe el email con el que creaste tu cuenta y te mandamos un enlace para poner una nueva contraseña.
+              </div>
+              <Field label="Email*"><input style={inputStyle} type="email" value={f.email} onChange={upd("email")} placeholder="tu@correo.com" /></Field>
+              {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
+              {aviso && <div style={{ color: C.green, fontSize: 13.5, fontWeight: 600, marginBottom: 12, lineHeight: 1.5 }}>✉️ {aviso}</div>}
+              <Btn onClick={recuperar} disabled={enviando} style={{ width: "100%", marginTop: 4 }}>
+                {enviando ? "Enviando…" : "Enviarme el enlace"}
+              </Btn>
+              <button onClick={() => { setMode("login"); setErr(""); setAviso(""); }} style={{
+                width: "100%", marginTop: 14, border: "none", background: "transparent", color: C.green,
+                fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "'Spline Sans',sans-serif" }}>
+                ← Volver a iniciar sesión
+              </button>
+            </div>
+          )}
           {mode === "signup" && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Field label="Nombre*"><input style={inputStyle} value={f.name} onChange={upd("name")} /></Field>
               <Field label="Apellido"><input style={inputStyle} value={f.last} onChange={upd("last")} /></Field>
             </div>
           )}
+          {mode !== "recuperar" && (
+          <>
           <Field label="Email*"><input style={inputStyle} type="email" value={f.email} onChange={upd("email")} placeholder="tu@correo.com" /></Field>
           {mode === "signup" && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1045,9 +1155,18 @@ function Auth({ onAuth, players, setPlayers }) {
           {err && <div style={{ color: C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
           <Btn onClick={submit} style={{ width: "100%", marginTop: 4 }}>{mode === "login" ? "Entrar" : "Crear cuenta"}</Btn>
           {mode === "login" && (
-            <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: "#6b7a72" }}>
-              ¿Primera vez? Crea tu cuenta y arma tu comunidad.
-            </div>
+            <>
+              <button onClick={() => { setMode("recuperar"); setErr(""); setAviso(""); }} style={{
+                width: "100%", marginTop: 14, border: "none", background: "transparent", color: C.green,
+                fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "'Spline Sans',sans-serif" }}>
+                ¿Olvidaste tu contraseña?
+              </button>
+              <div style={{ textAlign: "center", marginTop: 10, fontSize: 13, color: "#6b7a72" }}>
+                ¿Primera vez? Crea tu cuenta y arma tu comunidad.
+              </div>
+            </>
+          )}
+          </>
           )}
         </Card>
       </div>
@@ -3861,6 +3980,7 @@ export default function App() {
   const [quickRound, setQuickRound] = useState(false); // "Iniciar Ronda": true = ronda casual sin evento
   const [eventJump, setEventJump] = useState(null);    // id de evento a abrir directamente en la comunidad
   const [playEventId, setPlayEventId] = useState(null); // evento abierto en modo anotación (Iniciar Ronda)
+  const [recuperando, setRecuperando] = useState(false); // llegó del enlace de recuperar contraseña
 
   // Al cambiar de pantalla, volver al tope de la página
   useEffect(() => { window.scrollTo(0, 0); }, [view, openCommunity]);
@@ -3982,6 +4102,15 @@ export default function App() {
     return error ? "No se pudo actualizar: " + error.message : "";
   } : null;
 
+  /* Recuperación de contraseña: al abrir el enlace del correo, Supabase deja
+     el token en la dirección y avisa con el evento PASSWORD_RECOVERY. */
+  useEffect(() => {
+    if (!CLOUD) return;
+    if (/type=recovery/.test(window.location.hash) || /type=recovery/.test(window.location.search)) setRecuperando(true);
+    const { data } = sb.auth.onAuthStateChange((evento) => { if (evento === "PASSWORD_RECOVERY") setRecuperando(true); });
+    return () => data?.subscription?.unsubscribe();
+  }, []);
+
   const login = async (u) => {
     if (CLOUD && u.cloudUser) {
       // Primero se cargan los datos compartidos y recién entonces se crea
@@ -4000,6 +4129,9 @@ export default function App() {
     setMe(null); setView("home"); localStore.set("gb_me_v1", null);
   };
 
+  // Llegó desde el enlace del correo de recuperación: antes que nada, elegir
+  // la contraseña nueva (aunque la sesión ya esté abierta por el enlace).
+  if (recuperando) return <NuevaPassword onListo={() => { setRecuperando(false); limpiarHash(); }} />;
   if (!ready) return <div style={{ minHeight: 400, display: "grid", placeItems: "center", color: C.green }}>Cargando…</div>;
   if (!me) return <div style={{ fontFamily: "'Spline Sans',sans-serif" }}><Auth onAuth={login} players={players} setPlayers={setPlayers} /></div>;
 
