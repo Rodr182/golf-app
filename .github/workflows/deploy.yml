@@ -26,6 +26,23 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      # Red de seguridad: una compilación sin credenciales de Supabase es una
+      # app en modo local — nadie podría entrar a su cuenta. Si eso pasa, el
+      # despliegue se detiene ANTES de publicar en vez de dejar la app rota.
+      - name: Verificar que la app quedó conectada a la base de datos
+        run: |
+          set -euo pipefail
+          url=$(grep -o 'https://[a-z0-9]*\.supabase\.co' frontend/src/config.js | head -1 || true)
+          if [ -z "$url" ]; then
+            echo "ERROR: frontend/src/config.js no tiene la URL de Supabase."
+            echo "La app se publicaría en modo local y nadie podría iniciar sesión."
+            exit 1
+          fi
+          if ! grep -rqF "$url" frontend/dist/assets/; then
+            echo "ERROR: la compilación no contiene $url"
+            exit 1
+          fi
+          echo "OK: la app publicada apunta a $url"
       - name: Publicar en la rama gh-pages
         run: |
           cd frontend/dist
