@@ -1425,7 +1425,10 @@ function TeeDraw({ g, players, onDraw, canDraw }) {
         </div>
       ) : !show ? (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 13, color: "#7a8780" }}>Parejas por definir: sortéenlas en el tee, o elíjanlas si ya las armaron.</div>
+          <div style={{ fontSize: 13, color: "#7a8780" }}>
+            {canDraw ? "Parejas por definir: sortéenlas en el tee, o elíjanlas si ya las armaron."
+              : "Parejas por definir: las sortea el anotador del grupo o un administrador."}
+          </div>
           {canDraw && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Btn variant="gold" onClick={start}>🎲 Sortear</Btn>
@@ -3039,7 +3042,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
           {groups.map((g) => {
             const done = groupFilled(g);
-            const canDraw = admin || g.playerIds.includes(me.id);
+            // Sortear/elegir parejas y reemplazar jugadores son cambios que
+            // afectan las cuentas: los hace el anotador del grupo o un
+            // administrador de la comunidad, no cualquiera del grupo.
+            const canDraw = admin || g.scorerId === me.id;
             const iScore = mode === "play" && puedeAnotar(g);
             // El anotador se puede cambiar durante el juego: lo hace el admin
             // o el propio anotador (para pasarle la posta a otro del grupo).

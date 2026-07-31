@@ -98,6 +98,11 @@ vivo, pero en **solo lectura**.
 - Un administrador que quiera anotar primero se designa a sí mismo; aparece
   como opción en cualquier grupo por si el anotador no llegó.
 
+Los cambios de un grupo —**sortear o elegir las parejas**, **reemplazar un
+jugador**, **cambiar el anotador** y **corregir el hoyo de salida**— también
+quedan en manos del anotador de ese grupo y de los administradores de la
+comunidad. Los demás jugadores del grupo solo miran.
+
 ## Corregir el hoyo de salida
 
 Con los grupos ya armados, cada tarjeta de grupo trae el selector **Salida ·
