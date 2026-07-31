@@ -2522,6 +2522,23 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
   );
 }
 
+/* Selector del hoyo de salida de un grupo (1 o 10), reutilizable */
+function SalidaEditable({ start, onChange, compacto = false }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: compacto ? 0 : 10 }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: "#7a8780", textTransform: "uppercase", letterSpacing: .3 }}>Salida</span>
+      {[1, 10].map((h) => (
+        <button key={h} onClick={() => onChange(h)} style={{
+          border: `1.5px solid ${start === h ? C.green : C.line}`, cursor: "pointer", borderRadius: 8,
+          padding: compacto ? "4px 10px" : "5px 13px", fontWeight: 700, fontSize: 12.5,
+          fontFamily: "'Spline Sans',sans-serif",
+          background: start === h ? C.green : "#fff", color: start === h ? C.cream : C.green }}>Hoyo {h}</button>
+      ))}
+      <span style={{ fontSize: 11.5, color: "#9aa69e" }}>¿Salieron por el otro nueve? Cámbialo aquí.</span>
+    </div>
+  );
+}
+
 /* ---------------- GESTOR DE EVENTOS (inscripción → grupos → juego → consolidación) ---------------- */
 /* mode: "admin" = gestión desde la comunidad (sin llenado de scores);
    "play" = anotación de scores desde Iniciar Ronda. */
@@ -2555,6 +2572,18 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     setGuestName("");
   };
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
+
+  /* Corregir el hoyo de salida ya con los grupos armados. Los scores están
+     guardados por número de hoyo, así que no se mueven: lo que cambia es qué
+     nueve cuenta como Front y cuál como Back, y con eso los caminos. */
+  const cambiarSalida = (g, hoyo) => {
+    if (g.start === hoyo) return;
+    const conScores = Object.values(g.scores || {}).some((arr) => (arr || []).some((v) => v !== "" && v != null));
+    if (conScores && !window.confirm(
+      `¿Cambiar la salida del Grupo ${g.id} al hoyo ${hoyo}?\n\nLos golpes anotados no se tocan, pero cambia qué hoyos cuentan como Front y cuáles como Back, así que los resultados se recalculan.`
+    )) return;
+    setGroup(g.id, { start: hoyo });
+  };
 
   // ---- inscripción ----
   const toggleRegister = (pid) => {
@@ -2870,6 +2899,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               <div style={{ fontSize: 13, color: "#7a8780" }}>
                 {canEdit ? "Golpes brutos por hoyo · solo números enteros." : "👀 Vista en vivo (solo lectura) · se actualiza sola con lo que anota el anotador."}
               </div>
+              {canEdit && <SalidaEditable start={g.start} compacto onChange={(h) => cambiarSalida(g, h)} />}
             </div>
             <div style={{ display: "flex", gap: 4, background: C.creamDk, borderRadius: 10, padding: 3 }}>
               {[["hole", "Hoyo por hoyo"], ["matrix", "Tarjeta completa"]].map(([m, l]) => (
@@ -3008,6 +3038,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                     </Btn>
                   </div>
                 </div>
+                {/* La salida define qué hoyos son Front y cuáles Back: si se
+                    puso mal, se corrige aquí sin rehacer los grupos. Lo puede
+                    hacer el admin (desde la comunidad) y el anotador del grupo. */}
+                {(admin || g.scorerId === me.id) && <SalidaEditable start={g.start} onChange={(h) => cambiarSalida(g, h)} />}
                 <TeeDraw g={g} players={players} canDraw={canDraw} onDraw={(final, dm) => setGroup(g.id, { drawnOrder: final, drawnMode: dm })} />
                 {canDraw && (swapFor === g.id ? (
                   <div style={{ marginTop: 10, padding: "10px 12px", background: C.cream, borderRadius: 12, border: `1.5px dashed ${C.redSoft}` }}>

@@ -84,6 +84,14 @@ Cada compilación lleva un sello (`version.json`). Si el celular tiene una
 versión vieja en caché, la app lo detecta y se actualiza — nunca en medio de
 una tarjeta: mientras anotas solo avisa.
 
+## Corregir el hoyo de salida
+
+Con los grupos ya armados, cada tarjeta de grupo trae el selector **Salida ·
+Hoyo 1 / Hoyo 10**. Lo pueden cambiar el administrador y el anotador de ese
+grupo, también desde la pantalla de anotación. Los golpes anotados no se
+mueven: lo que cambia es qué nueve cuenta como Front y cuál como Back (y con
+eso los caminos). Si ya hay scores, avisa antes de aplicarlo.
+
 ## Eliminar una ronda empezada
 
 Dentro de una ronda o evento que todavía no se consolidó, **🗑 Eliminar**
