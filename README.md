@@ -143,6 +143,25 @@ el **historial del perfil**. El mensaje va en texto plano —nombre de la ronda,
 fecha, cancha, comunidad, la tabla del día jugador por jugador con su resultado
 y el pozo—, con 🎟️ marcando a los invitados.
 
+## Grupos de 3 y de 5
+
+- **Grupo de 5**: la pareja base (los dos primeros del grupo) juega contra las
+  tres combinaciones de los otros tres — tres matches internos de parejas, uno
+  por cada par posible. En **Grupos vs. Grupos** el grupo juega con cuatro
+  scores: al consolidar se elige (o se sortea) a quién se le deja fuera; ese
+  jugador **sigue jugando todo lo demás** —individual, medal, parejas— y cobra
+  o paga el resultado de su grupo como cualquiera.
+- **Grupo de 3**: se completa con un jugador de otro grupo. Es solo un
+  **préstamo de score**: presta su tarjeta para el mejor bola del grupo de 3,
+  pero él cobra o paga únicamente con **su propio** grupo. No gana ni pierde
+  doble.
+
+La **mayoría que anula los caminos** se cuenta por participantes del concurso:
+en Grupos vs. Grupos, **grupos** (regla 24 de la planilla: «más del 50% del no.
+de grupos»); en los individuales, **jugadores** (regla 36). Con dos grupos de
+distinto tamaño —5 contra 3— ganar uno es 1 de 2 = 50%, así que **no** anula y
+los caminos se reparten.
+
 ## Ranking y pozo de la comunidad
 
 Dentro de cada comunidad, además de la Money List:

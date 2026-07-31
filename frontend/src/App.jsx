@@ -84,6 +84,12 @@ function computeBye(pts, start, keys) {
   return { active: true, holes, points };
 }
 
+/* Resuelve una apuesta (front, back, match o bye) de un concurso.
+   El REPARTO va ponderado por `weight` —en Grupos vs. Grupos cada grupo pesa
+   lo que jugadores tiene, porque cada jugador cobra o paga los caminos—, pero
+   la MAYORÍA que anula se cuenta por participantes del concurso (hoja Reglas:
+   "más del 50% del no. de GRUPOS" en Grupos vs. Grupos, "del no. de JUGADORES"
+   en los individuales). Con grupos de distinto tamaño no es lo mismo. */
 function resolveBet(seg, tokens, weight) {
   const keys = Object.keys(seg);
   const total = keys.reduce((s, k) => s + weight[k], 0);
@@ -94,7 +100,9 @@ function resolveBet(seg, tokens, weight) {
   const perWinner = wPlayers > 0 ? pot / wPlayers : 0;
   const res = {};
   keys.forEach((k) => (res[k] = winners.includes(k) ? perWinner : -tokens));
-  return { res, winners, wPlayers, total, max };
+  // mayoría: ganadores contra participantes (grupos, parejas o jugadores)
+  const mayoria = winners.length > keys.length / 2;
+  return { res, winners, wPlayers, total, max, mayoria };
 }
 
 /* Resuelve concurso completo. Devuelve por contestant: {front,back,match,bye,total} + meta */
@@ -119,17 +127,17 @@ function resolveContest(nets, start, bet, opts) {
   let matchTokens = bet.match;
   const f = resolveBet(firstSeg, bet[firstName], weight);
   meta.winners[firstName] = f.winners;
-  if (f.wPlayers > f.total / 2) { meta.carryOver = true; matchTokens += bet[firstName]; }
+  if (f.mayoria) { meta.carryOver = true; matchTokens += bet[firstName]; }
   else keys.forEach((k) => (out[k][firstName] = f.res[k]));
 
   const s = resolveBet(secondSeg, bet[secondName], weight);
   meta.winners[secondName] = s.winners;
-  meta.secondVoid = s.wPlayers > s.total / 2;
+  meta.secondVoid = s.mayoria;
   if (!meta.secondVoid) keys.forEach((k) => (out[k][secondName] = s.res[k]));
 
   const m = resolveBet(match, matchTokens, weight);
   meta.winners.match = m.winners; meta.matchTokens = matchTokens;
-  if (m.wPlayers > m.total / 2) { meta.matchVoid = true; }
+  if (m.mayoria) { meta.matchVoid = true; }
   else keys.forEach((k) => (out[k].match = m.res[k]));
 
   if (!meta.matchVoid) {
@@ -138,7 +146,7 @@ function resolveContest(nets, start, bet, opts) {
       meta.byeActive = true; meta.byeHoles = bye.holes.map((h) => h + 1);
       const b = resolveBet(bye.points, bet.bye, weight);
       meta.winners.bye = b.winners;
-      if (b.wPlayers > b.total / 2) meta.byeVoid = true;
+      if (b.mayoria) meta.byeVoid = true;
       else keys.forEach((k) => (out[k].bye = b.res[k]));
     }
   }
