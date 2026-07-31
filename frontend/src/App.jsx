@@ -27,40 +27,31 @@ const strokesOnHole = (ph, si) => (ph < si ? 0 : 1 + Math.floor((ph - si) / 18))
    multiStroke, los gaps mayores a 18 reparten 2 o más strokes en los hoyos de
    menor stroke index. */
 const effPh = (ph, multiStroke) => (multiStroke ? ph : Math.min(ph, 18));
-const netScores = (gross, ph, si, multiStroke) => { const h = effPh(ph, multiStroke); return gross.map((g, i) => g - strokesOnHole(h, si[i])); };
+/* Neto hoyo por hoyo. `r8` = Regla 8: en los hoyos marcados (solo par 3) el
+   stroke sirve únicamente para llegar al par — no baja de ahí, y no se aplica
+   si el hoyo ya se jugó en par o mejor. Es la fórmula de la planilla:
+   IF(AND(par=3, regla8), IF(AND(strokes>=SI, gross>3), gross-1, gross), ...) */
+const netScores = (gross, ph, si, multiStroke, r8) => {
+  const h = effPh(ph, multiStroke);
+  return gross.map((g, i) => {
+    const s = strokesOnHole(h, si[i]);
+    if (!s) return g;
+    if (r8 && r8.holes.has(i) && r8.pars[i] === 3) return g > 3 ? Math.max(g - s, 3) : g;
+    return g - s;
+  });
+};
 const playOrder = (start) => Array.from({ length: 18 }, (_, i) => (start - 1 + i) % 18);
 const sumRange = (a, i, j) => a.slice(i, j).reduce((s, x) => s + x, 0);
 
-// opts opcional: { tieOnly: Set(holeIdx 0-based), strokeFlag: {key:[18]nro de strokes} }
-// Regla 8: en los hoyos tie-only, el neto de quien recibe stroke no puede bajar del
-// mejor neto de quien NO recibe stroke (el stroke solo sirve para empatar, no para ganar).
-function pointsPerHole(nets, opts) {
-  const tieOnly = opts && opts.tieOnly ? opts.tieOnly : null;
-  const strokeFlag = (opts && opts.strokeFlag) || {};
+/* Se apunta el hoyo todo el que iguala el mejor neto (la Regla 8 ya viene
+   aplicada dentro de los netos, igual que en la planilla). */
+function pointsPerHole(nets) {
   const pts = {};
   nets.forEach((n) => (pts[n.key] = new Array(18).fill(0)));
   for (let h = 0; h < 18; h++) {
-    const eff = {};
-    if (tieOnly && tieOnly.has(h)) {
-      // El hoyo se decide por GROSS; los strokes solo permiten EMPATAR (no ganar).
-      // gross = net + los strokes recibidos en el hoyo (pueden ser más de uno).
-      const strokesAt = (k) => ((strokeFlag[k] && strokeFlag[k][h]) || 0);
-      const gross = {};
-      nets.forEach((n) => { gross[n.key] = n.net[h] + strokesAt(n.key); });
-      let bestGross = Infinity;
-      nets.forEach((n) => { if (gross[n.key] < bestGross) bestGross = gross[n.key]; });
-      nets.forEach((n) => {
-        const got = strokesAt(n.key);
-        if (gross[n.key] === bestGross) pts[n.key][h] = 1;            // gana o empata por gross
-        else if (got && gross[n.key] - got <= bestGross) pts[n.key][h] = 1; // los strokes alcanzan solo para empatar
-      });
-      continue;
-    } else {
-      nets.forEach((n) => (eff[n.key] = n.net[h]));
-    }
     let min = Infinity;
-    nets.forEach((n) => { if (eff[n.key] < min) min = eff[n.key]; });
-    nets.forEach((n) => { if (eff[n.key] === min) pts[n.key][h] = 1; });
+    nets.forEach((n) => { if (n.net[h] < min) min = n.net[h]; });
+    nets.forEach((n) => { if (n.net[h] === min) pts[n.key][h] = 1; });
   }
   return pts;
 }
@@ -106,10 +97,10 @@ function resolveBet(seg, tokens, weight) {
 }
 
 /* Resuelve concurso completo. Devuelve por contestant: {front,back,match,bye,total} + meta */
-function resolveContest(nets, start, bet, opts) {
+function resolveContest(nets, start, bet) {
   const keys = nets.map((n) => n.key);
   const weight = {}; nets.forEach((n) => (weight[n.key] = n.weight ?? 1));
-  const pts = pointsPerHole(nets, opts);
+  const pts = pointsPerHole(nets);
   const front = {}, back = {}, match = {};
   keys.forEach((k) => {
     front[k] = sumRange(pts[k], 0, 9);
@@ -163,14 +154,10 @@ function computeEvent(event, course, rules) {
   // individuales. Los hoyos los define la COMUNIDAD por cancha (regla8Holes);
   // course.tieOnlyHoles queda como respaldo de datos antiguos.
   const tieHoles = (rules.regla8Holes && rules.regla8Holes.length ? rules.regla8Holes : course.tieOnlyHoles) || [];
-  const tieOnly = rules.regla8 && tieHoles.length ? new Set(tieHoles.map((h) => h - 1)) : null;
+  const r8 = rules.regla8 && tieHoles.length
+    ? { holes: new Set(tieHoles.map((h) => h - 1)), pars: course.pars || [] }
+    : null;
   const multiStroke = !!rules.multiStroke;
-  const strokeFlagFor = (idPhPairs) => {
-    if (!tieOnly) return undefined;
-    const flag = {};
-    idPhPairs.forEach(({ key, ph }) => { flag[key] = si.map((s) => strokesOnHole(effPh(ph, multiStroke), s)); });
-    return { tieOnly, strokeFlag: flag };
-  };
   // adjusted handicaps
   const adj = {}; const playerName = {};
   teams.forEach((t) => t.players.forEach((p) => { adj[p.id] = adjustedHcp(p.hcp, rules.rulePct); playerName[p.id] = p.name; }));
@@ -200,12 +187,12 @@ function computeEvent(event, course, rules) {
   teams.forEach((t) => {
     const base = Math.min(...t.players.map((p) => adj[p.id]));
     const ph = {}; t.players.forEach((p) => (ph[p.id] = adj[p.id] - base));
-    const net = {}; t.players.forEach((p) => (net[p.id] = netScores(p.gross, ph[p.id], si, multiStroke)));
+    const net = {}; t.players.forEach((p) => (net[p.id] = netScores(p.gross, ph[p.id], si, multiStroke, r8)));
     t._teamBase = base; t._ph = ph; t._net = net;
 
     // Team Individual
     const iNets = t.players.map((p) => ({ key: "" + p.id, net: net[p.id], weight: 1 }));
-    const ind = resolveContest(iNets, t.start, bet, strokeFlagFor(t.players.map((p) => ({ key: "" + p.id, ph: ph[p.id] }))));
+    const ind = resolveContest(iNets, t.start, bet);
     t.players.forEach((p) => {
       money[p.id].team += ind.perContestant["" + p.id].total;
       detail[p.id].contests.push({ name: "Individual interno", scope: "equipo", ...ind.perContestant["" + p.id], meta: ind.meta });
@@ -245,7 +232,7 @@ function computeEvent(event, course, rules) {
   /* ----- CONCURSOS POR EVENTO ----- */
   const eventBase = Math.min(...allIds.map((id) => adj[id]));
   const gph = {}; allIds.forEach((id) => (gph[id] = adj[id] - eventBase));
-  const gnet = {}; teams.forEach((t) => t.players.forEach((p) => (gnet[p.id] = netScores(p.gross, gph[p.id], si, multiStroke))));
+  const gnet = {}; teams.forEach((t) => t.players.forEach((p) => (gnet[p.id] = netScores(p.gross, gph[p.id], si, multiStroke, r8))));
   const votes = teams.reduce((s, t) => s + (t.start === 1 ? 1 : -1), 0);
   const eventStart = votes >= 0 ? 1 : 10;
 
@@ -253,7 +240,7 @@ function computeEvent(event, course, rules) {
   // sería idéntico al Individual interno y se duplicaría la apuesta.
   if (teams.length > 1) {
     const giNets = allIds.map((id) => ({ key: "" + id, net: gnet[id], weight: 1 }));
-    const gi = resolveContest(giNets, eventStart, bet, strokeFlagFor(allIds.map((id) => ({ key: "" + id, ph: gph[id] }))));
+    const gi = resolveContest(giNets, eventStart, bet);
     allIds.forEach((id) => {
       money[id].group += gi.perContestant["" + id].total;
       detail[id].contests.push({ name: "Individual general", scope: "evento", ...gi.perContestant["" + id], meta: gi.meta });
@@ -266,7 +253,10 @@ function computeEvent(event, course, rules) {
     const tvtNets = teams.map((t) => {
       let parts = t.players.map((p) => p.id);
       if (parts.length === 3) {
-        const others = allIds.filter((id) => !parts.includes(id));
+        // Regla 10: el prestado se sortea de un grupo de CUATRO. Si no hay
+        // ninguno, se toma de cualquier otro grupo para no dejar el concurso sin resolver.
+        const deCuatro = teams.filter((x) => x.id !== t.id && x.players.length === 4).flatMap((x) => x.players.map((p) => p.id));
+        const others = deCuatro.length ? deCuatro : allIds.filter((id) => !parts.includes(id));
         const loan = (t.loanPlayerId && others.includes(t.loanPlayerId)) ? t.loanPlayerId : others[0];
         if (loan) parts = [...parts, loan];
       } else if (parts.length === 5) {
@@ -1787,7 +1777,12 @@ function StartRound({ courses, communities, players, me, onStart, onCancel, init
   };
   // B1: un jugador no puede estar en más de un grupo del evento
   const takenElsewhere = (tid, pid) => teams.some((t) => t.id !== tid && t.players.some((p) => p.id === pid));
-  const playersInOtherTeams = (tid) => teams.filter((t) => t.id !== tid).flatMap((t) => t.players.map((p) => p.id));
+  // Regla 10: el prestado sale de un grupo de cuatro; si no hay, de cualquier otro.
+  const playersInOtherTeams = (tid) => {
+    const otros = teams.filter((t) => t.id !== tid);
+    const deCuatro = otros.filter((t) => t.players.length === 4);
+    return (deCuatro.length ? deCuatro : otros).flatMap((t) => t.players.map((p) => p.id));
+  };
   const autoPairs = (players) => {
     if (players.length === 4) return [[players[0].id, players[1].id], [players[2].id, players[3].id]];
     return []; // 3 jugadores: sin parejas. 5: parejas rotativas (pendiente), se omite el concurso de parejas.
@@ -3141,17 +3136,22 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 6 }}>Jugador prestado para grupos de 3</div>
             <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 12 }}>
               Para el concurso <b>Grupos vs. Grupos</b>, cada grupo de 3 recibe un jugador prestado de otro grupo, que entra con el score que ya jugó.
+              Por la regla 10 se sortea de un <b>grupo de cuatro</b>; solo presta el score: cobra y paga con su propio grupo.
             </div>
-            {threeGroups.map((tg) => (
+            {threeGroups.map((tg) => {
+              const deCuatro = groups.filter((x) => x.id !== tg.id && x.playerIds.length === 4);
+              const candidatos = (deCuatro.length ? deCuatro : groups.filter((x) => x.id !== tg.id)).flatMap((x) => x.playerIds);
+              return (
               <Field key={tg.id} label={`Prestado para el Grupo ${tg.id} (${tg.playerIds.map((id) => resolveName(id, players).split(" ")[0]).join(", ")})`}>
                 <select style={inputStyle} value={loanChoices[tg.id] || ""} onChange={(e) => setLoanChoices({ ...loanChoices, [tg.id]: e.target.value || undefined })}>
                   <option value="">Elegir jugador…</option>
-                  {groups.filter((x) => x.id !== tg.id).flatMap((x) => x.playerIds).map((pid) => (
+                  {candidatos.map((pid) => (
                     <option key={pid} value={pid}>{resolveName(pid, players)} — {grossTotal(pid) ?? "?"} golpes</option>
                   ))}
                 </select>
               </Field>
-            ))}
+              );
+            })}
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
               <Btn variant="ghost" onClick={() => setLoanStep(false)}>Cancelar</Btn>
               <Btn variant="gold" disabled={!allLoansChosen} onClick={() => { setLoanStep(false); consolidate(loanChoices); }}>Confirmar y consolidar →</Btn>

@@ -143,6 +143,31 @@ el **historial del perfil**. El mensaje va en texto plano —nombre de la ronda,
 fecha, cancha, comunidad, la tabla del día jugador por jugador con su resultado
 y el pozo—, con 🎟️ marcando a los invitados.
 
+## La planilla manda
+
+Los cálculos de la app replican las fórmulas de `Programa_KFB_2026.xlsx` (hojas
+`Reglas`, `Pts General`, `Internos` y `RESULTADOS`). Ante cualquier duda, la
+planilla es la referencia.
+
+La prueba `scratchpad/test-excel.mjs` corre por el motor de la app una **fecha
+real completa** tomada de la hoja `SCORES` —16 jugadores, 4 grupos— y compara
+contra la hoja `RESULTADOS` camino por camino: Grupos vs. Grupos, Individual
+general, Parejas, Individual interno, total de caminos y soles. Las 96
+comparaciones dan igual.
+
+Puntos donde la planilla es explícita y la app los sigue:
+
+- **Hándicap** (regla 4): `ROUND(hcp × 75%, 0)`; strokes = `MIN(18, reducido −
+  base)`, con base = el hándicap reducido más bajo (del grupo en los concursos
+  internos, del evento en los generales).
+- **Regla 8** (regla 16): en los hoyos marcados —solo par 3— el stroke sirve
+  para **llegar al par, no para bajar de ahí**, y no se aplica si el hoyo ya se
+  jugó en par o mejor. En los par 3 no marcados el stroke cuenta entero.
+- **Mayoría que anula** (reglas 24 y 36): por **grupos** en Grupos vs. Grupos,
+  por **jugadores** en los individuales, por **parejas** en Pareja vs. Pareja.
+- **Préstamo** (regla 10): el jugador que completa un grupo de 3 se toma de un
+  **grupo de cuatro**.
+
 ## Grupos de 3 y de 5
 
 - **Grupo de 5**: la pareja base (los dos primeros del grupo) juega contra las
@@ -151,7 +176,7 @@ y el pozo—, con 🎟️ marcando a los invitados.
   scores: al consolidar se elige (o se sortea) a quién se le deja fuera; ese
   jugador **sigue jugando todo lo demás** —individual, medal, parejas— y cobra
   o paga el resultado de su grupo como cualquiera.
-- **Grupo de 3**: se completa con un jugador de otro grupo. Es solo un
+- **Grupo de 3**: se completa con un jugador **de un grupo de cuatro**. Es solo un
   **préstamo de score**: presta su tarjeta para el mejor bola del grupo de 3,
   pero él cobra o paga únicamente con **su propio** grupo. No gana ni pierde
   doble.
