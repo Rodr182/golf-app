@@ -2563,6 +2563,23 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const eventGuests = event.guests || [];
   const guestIdSet = new Set(eventGuests.map((g) => g.id));
   const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
+
+  /* ---- ANOTADOR DEL GRUPO ----
+     Anota UNA sola persona por grupo. Tiene que tener cuenta: un invitado no
+     entra a la app, así que si quedaba designado nadie podía anotar. */
+  const tieneCuenta = (pid) => players.some((p) => p.id === pid && p.email);
+  const anotadoresPosibles = (g) => {
+    const delGrupo = (g.playerIds || []).filter(tieneCuenta).map((id) => ({ id, name: resolveName(id, players) }));
+    // El administrador siempre puede tomarlo: si el anotador designado no
+    // llegó, alguien tiene que poder anotar o la ronda queda trabada.
+    if (admin && !delGrupo.some((o) => o.id === me.id)) delGrupo.push({ id: me.id, name: resolveName(me.id, players) + " (admin)" });
+    return delGrupo.length ? delGrupo : [{ id: me.id, name: resolveName(me.id, players) + " (tú)" }];
+  };
+  const anotadorValido = (g) => !!g.scorerId && (tieneCuenta(g.scorerId) || g.scorerId === me.id);
+  // Puede escribir el anotador designado. El admin NO escribe por encima de
+  // él: si hace falta, primero se pone como anotador (un clic). La excepción
+  // es un grupo sin anotador válido, para que la ronda no quede trabada.
+  const puedeAnotar = (g) => g.scorerId === me.id || (admin && !anotadorValido(g));
   // Agrega un invitado: entra al evento (inscrito) pero se marca como invitado
   // para NO contar en la money list acumulada (solo en las cuentas del día).
   const addGuest = () => {
@@ -2843,7 +2860,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                       <Field label="Anotador del grupo">
                         <select style={{ ...inputStyle, padding: "8px 10px" }} value={g.scorerId || ""} onChange={(e) => setGroup(g.id, { scorerId: e.target.value || null })}>
                           <option value="">Elegir…</option>
-                          {g.playerIds.map((pid) => <option key={pid} value={pid}>{resolveName(pid, players)}</option>)}
+                          {anotadoresPosibles(g).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                         </select>
                       </Field>
                       {g.playerIds.length === 3 && (
@@ -2885,9 +2902,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   if (event.status === "jugando") {
     const g = groups.find((x) => x.id === scoringGroup);
     if (g) {
-      // Anota el anotador designado (y los admins). Los demás participantes
-      // ven la tarjeta EN VIVO y el resumen interno, en solo lectura.
-      const canEdit = mode === "play" && (g.scorerId === me.id || admin);
+      // Escribe SOLO el anotador designado. Todos los demás —incluidos los
+      // administradores— ven la tarjeta en vivo en modo lectura.
+      const canEdit = mode === "play" && puedeAnotar(g);
       // el orden sorteado define las parejas del resumen interno
       const playerList = groupOrder(g).map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
       return (
@@ -2895,9 +2912,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           <Head />
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <div>
-              <div style={{ fontWeight: 700 }}>Grupo {g.id} · anotador: {resolveName(g.scorerId, players)}</div>
+              <div style={{ fontWeight: 700 }}>Grupo {g.id} · anotador: {anotadorValido(g) ? resolveName(g.scorerId, players) : "sin designar"}</div>
               <div style={{ fontSize: 13, color: "#7a8780" }}>
-                {canEdit ? "Golpes brutos por hoyo · solo números enteros." : "👀 Vista en vivo (solo lectura) · se actualiza sola con lo que anota el anotador."}
+                {canEdit ? "Golpes brutos por hoyo · solo números enteros."
+                  : `👀 Vista en vivo (solo lectura) · anota ${resolveName(g.scorerId, players)} y se actualiza sola.`}
               </div>
               {canEdit && <SalidaEditable start={g.start} compacto onChange={(h) => cambiarSalida(g, h)} />}
             </div>
@@ -2970,7 +2988,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           {/* Al terminar una tarjeta se puede saltar directo a la siguiente que
               me toque anotar, sin volver a la lista de grupos. */}
           {(() => {
-            const míos = groups.filter((x) => mode === "play" && (x.scorerId === me.id || admin));
+            const míos = groups.filter((x) => mode === "play" && puedeAnotar(x));
             const pendiente = míos.find((x) => x.id !== g.id && !groupFilled(x));
             return (
               <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14, gap: 10, flexWrap: "wrap" }}>
@@ -3022,14 +3040,19 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           {groups.map((g) => {
             const done = groupFilled(g);
             const canDraw = admin || g.playerIds.includes(me.id);
-            const iScore = mode === "play" && (g.scorerId === me.id || admin);
+            const iScore = mode === "play" && puedeAnotar(g);
+            // El anotador se puede cambiar durante el juego: lo hace el admin
+            // o el propio anotador (para pasarle la posta a otro del grupo).
+            const puedeCambiarAnotador = admin || g.scorerId === me.id;
             return (
               <Card key={g.id} style={{ padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
                   <div>
                     <div style={{ fontWeight: 700 }}>Grupo {g.id} · salida hoyo {g.start}</div>
                     <div style={{ color: "#7a8780", fontSize: 13 }}>{g.playerIds.map((id) => resolveName(id, players)).join(", ")}</div>
-                    <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 3 }}>Anotador: {resolveName(g.scorerId, players)}</div>
+                    <div style={{ fontSize: 12.5, color: anotadorValido(g) ? "#7a8780" : C.red, marginTop: 3, fontWeight: anotadorValido(g) ? 400 : 700 }}>
+                      {anotadorValido(g) ? <>Anotador: {resolveName(g.scorerId, players)}{g.scorerId === me.id ? " (tú)" : ""}</> : "⚠️ Sin anotador con cuenta"}
+                    </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     {done ? <Chip tone="green">Completo</Chip> : <Chip tone="neutral">Pendiente</Chip>}
@@ -3038,6 +3061,18 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                     </Btn>
                   </div>
                 </div>
+                {/* Cambiar quién anota, sin rehacer los grupos */}
+                {puedeCambiarAnotador && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#7a8780", textTransform: "uppercase", letterSpacing: .3 }}>Anota</span>
+                    <select style={{ ...inputStyle, width: "auto", padding: "6px 10px", marginBottom: 0, fontSize: 13 }}
+                      value={anotadorValido(g) ? g.scorerId : ""} onChange={(e) => setGroup(g.id, { scorerId: e.target.value || null })}>
+                      {!anotadorValido(g) && <option value="">Elegir…</option>}
+                      {anotadoresPosibles(g).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                    <span style={{ fontSize: 11.5, color: "#9aa69e" }}>Solo esta persona escribe los scores; el resto mira.</span>
+                  </div>
+                )}
                 {/* La salida define qué hoyos son Front y cuáles Back: si se
                     puso mal, se corrige aquí sin rehacer los grupos. Lo puede
                     hacer el admin (desde la comunidad) y el anotador del grupo. */}
@@ -4194,11 +4229,11 @@ export default function App() {
     setEventJump(ev.id); setOpenCommunity(c); setView("communities");
   };
   // ¿Soy anotador (o admin) de algún grupo del evento? Define si entro a anotar o a ver en vivo.
-  const isScorer = (ev) => {
-    const c = communityForEvent(ev, communities);
-    if (c && isAdmin(c, me.id)) return true;
-    return (ev.groups || []).some((g) => g.scorerId === me.id);
-  };
+  // ¿Anoto yo algún grupo? Ser administrador NO da permiso de anotar: define
+  // quién anota, pero para escribir tiene que designarse a sí mismo.
+  const isScorer = (ev) => (ev.groups || []).some((g) => g.scorerId === me.id);
+  const isEventAdmin = (ev) => { const c = communityForEvent(ev, communities); return !!c && isAdmin(c, me.id); };
+  const etiquetaEvento = (ev) => (isScorer(ev) ? "Anotar scores →" : isEventAdmin(ev) ? "Gestionar →" : "👀 Ver en vivo →");
   const EVJUMP_STATUS = { inscripcion: ["Inscripción abierta", "gold"], grupos: ["Armando grupos", "gold"], jugando: ["En juego", "green"] };
 
   const AvisosBarra = () => {
@@ -4294,7 +4329,7 @@ export default function App() {
                         <div style={{ fontWeight: 700 }}>⛳ {e.name} <Chip tone="green">{lbl}</Chip></div>
                         <div style={{ fontSize: 13, color: "#7a8780" }}>{c?.name} · {e.date}</div>
                       </div>
-                      <Btn onClick={() => { if (e.status === "jugando") { setPlayEventId(e.id); setView("round"); } else goToEvent(e); }}>{e.status === "jugando" ? (isScorer(e) ? "Anotar scores →" : "👀 Ver en vivo →") : "Continuar →"}</Btn>
+                      <Btn onClick={() => { if (e.status === "jugando") { setPlayEventId(e.id); setView("round"); } else goToEvent(e); }}>{e.status === "jugando" ? etiquetaEvento(e) : "Continuar →"}</Btn>
                     </Card>
                   );
                 })}
@@ -4386,7 +4421,7 @@ export default function App() {
                     </div>
                     <Btn variant={e.status === "inscripcion" && !registered ? "gold" : "primary"}
                       onClick={() => { if (e.status === "jugando") setPlayEventId(e.id); else goToEvent(e); }}>
-                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : e.status === "jugando" ? (isScorer(e) ? "Anotar scores →" : "👀 Ver en vivo →") : "Continuar →"}
+                      {e.status === "inscripcion" && !registered ? "Inscribirme →" : e.status === "jugando" ? etiquetaEvento(e) : "Continuar →"}
                     </Btn>
                   </Card>
                 );

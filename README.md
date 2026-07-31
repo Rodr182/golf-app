@@ -84,6 +84,20 @@ Cada compilación lleva un sello (`version.json`). Si el celular tiene una
 versión vieja en caché, la app lo detecta y se actualiza — nunca en medio de
 una tarjeta: mientras anotas solo avisa.
 
+## Quién anota
+
+En cada grupo **anota una sola persona**: la designada. Todos los demás —los
+otros jugadores del grupo y también los administradores— ven la tarjeta en
+vivo, pero en **solo lectura**.
+
+- El anotador tiene que **tener cuenta**: un invitado no entra a la app, así
+  que no aparece como opción.
+- Se puede **cambiar durante el juego** desde la tarjeta del grupo, con el
+  selector **Anota**. Lo pueden hacer el administrador y el propio anotador
+  (para pasarle la posta).
+- Un administrador que quiera anotar primero se designa a sí mismo; aparece
+  como opción en cualquier grupo por si el anotador no llegó.
+
 ## Corregir el hoyo de salida
 
 Con los grupos ya armados, cada tarjeta de grupo trae el selector **Salida ·
