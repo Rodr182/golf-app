@@ -2954,11 +2954,33 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               )}
             </div>
             {!(editHcps && canEdit) ? (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                {playerList.map((p) => (
-                  <Chip key={p.id} tone="neutral">{p.name.split(" ")[0]} · hcp {p.hcp === "" || p.hcp == null ? "—" : p.hcp} (aj. {p.hcp === "" || p.hcp == null ? "—" : adjustedHcp(parseInt(p.hcp) || 0, community.rulePct)})</Chip>
-                ))}
-              </div>
+              (() => {
+                const conHcp = playerList.filter((p) => p.hcp !== "" && p.hcp != null);
+                const adj = {}; conHcp.forEach((p) => (adj[p.id] = adjustedHcp(parseInt(p.hcp) || 0, community.rulePct)));
+                const base = conHcp.length ? Math.min(...conHcp.map((p) => adj[p.id])) : 0;
+                const deLaBase = conHcp.filter((p) => adj[p.id] === base).map((p) => p.name.split(" ")[0]);
+                return (
+                  <>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                      {playerList.map((p) => {
+                        const sin = p.hcp === "" || p.hcp == null;
+                        const st = sin ? null : Math.min(adj[p.id] - base, 18);
+                        return (
+                          <Chip key={p.id} tone={st === 0 ? "gold" : "neutral"}>
+                            {p.name.split(" ")[0]} · hcp {sin ? "—" : p.hcp} (aj. {sin ? "—" : adj[p.id]}) · {sin ? "—" : st === 0 ? "da los strokes" : `${st} stroke${st === 1 ? "" : "s"}`}
+                          </Chip>
+                        );
+                      })}
+                    </div>
+                    {conHcp.length > 0 && (
+                      <div style={{ fontSize: 12, color: "#7a8780", marginTop: 7 }}>
+                        Base del grupo: <b>{base}</b> ({deLaBase.join(", ")}) · los strokes de cada uno son su hándicap ajustado menos la base, con tope de 18.
+                        {base < 0 && " Un hándicap positivo se carga en negativo y baja la base, así que el resto recibe más strokes."}
+                      </div>
+                    )}
+                  </>
+                );
+              })()
             ) : (
               <div style={{ marginTop: 10 }}>
                 {playerList.map((p) => (
