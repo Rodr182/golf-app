@@ -160,6 +160,13 @@ Puntos donde la planilla es explícita y la app los sigue:
 - **Hándicap** (regla 4): `ROUND(hcp × 75%, 0)`; strokes = `MIN(18, reducido −
   base)`, con base = el hándicap reducido más bajo (del grupo en los concursos
   internos, del evento en los generales).
+- **Hándicap positivo**: quien juega bajo par le da strokes a la cancha. Se
+  carga **en negativo** (+2 se escribe `-2`) y ahí la reducción se **divide**
+  en vez de multiplicar: `-2` al 75% queda en `-3`. Multiplicar acercaría el
+  hándicap a cero, o sea le recortaría lo que da mientras al resto le recorta
+  lo que recibe; dividiendo, la penalización cae en la misma proporción para
+  todos. Es el único punto donde la app se aparta de la planilla, que multiplica
+  para todos porque nunca tuvo un hándicap positivo cargado.
 - **Regla 8** (regla 16): en los hoyos marcados —solo par 3— el stroke sirve
   para **llegar al par, no para bajar de ahí**, y no se aplica si el hoyo ya se
   jugó en par o mejor. En los par 3 no marcados el stroke cuenta entero.

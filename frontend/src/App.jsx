@@ -20,7 +20,16 @@ const CLOUD = !!sb;
 
 /* ---------------- MOTOR DE CÁLCULO ---------------- */
 const rnd = (x) => Math.sign(x) * Math.round(Math.abs(x));
-const adjustedHcp = (hcp, rulePct) => rnd(hcp * (rulePct / 100));
+/* Hándicap reducido al % de la comunidad. Un hándicap POSITIVO (el jugador le
+   da strokes a la cancha) se escribe negativo —+2 es −2— y ahí la reducción se
+   DIVIDE en vez de multiplicar: multiplicar acerca el hándicap a cero, o sea le
+   recortaría lo que da mientras al resto le recorta lo que recibe. Dividiendo,
+   la penalización cae en la misma proporción para todos. */
+const adjustedHcp = (hcp, rulePct) => {
+  const f = (rulePct || 0) / 100;
+  if (f <= 0) return 0;
+  return hcp < 0 ? rnd(hcp / f) : rnd(hcp * f);
+};
 const strokesOnHole = (ph, si) => (ph < si ? 0 : 1 + Math.floor((ph - si) / 18));
 /* Hándicap de juego efectivo. Por defecto se limita a 18 → como máximo 1 stroke
    por hoyo (regla clásica del Machetero). Si la comunidad/ronda activa
@@ -955,10 +964,11 @@ function Card({ children, style }) {
   return <div style={{ background: C.paper, borderRadius: 18, border: `1px solid ${C.line}`, boxShadow: "0 2px 0 rgba(0,0,0,.02)", ...style }}>{children}</div>;
 }
 
-function Field({ label, children }) {
+function Field({ label, children, hint }) {
   return <label style={{ display: "block", marginBottom: 14 }}>
     <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: C.green, letterSpacing: .4, textTransform: "uppercase", marginBottom: 6 }}>{label}</span>
     {children}
+    {hint && <span style={{ display: "block", fontSize: 12, color: "#7a8780", marginTop: 5 }}>{hint}</span>}
   </label>;
 }
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${C.line}`, background: "#fff", fontFamily: "'Spline Sans',sans-serif", fontSize: 15, color: C.ink, outline: "none" };
@@ -1145,7 +1155,7 @@ function Auth({ onAuth, players, setPlayers }) {
           {mode === "signup" && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={upd("birth")} /></Field>
-              <Field label="Hándicap"><input style={inputStyle} type="number" inputMode="numeric" value={f.hcp} onChange={upd("hcp")} placeholder="ej. 12" /></Field>
+              <Field label="Hándicap" hint="Si eres hándicap positivo (+2), escríbelo como −2"><input style={inputStyle} type="number" step="1" value={f.hcp} onChange={upd("hcp")} placeholder="ej. 12 · +2 se escribe -2" /></Field>
             </div>
           )}
           <Field label="Contraseña*"><input style={inputStyle} type="password" value={f.pass} onChange={upd("pass")} /></Field>
@@ -2188,7 +2198,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={(e) => setF({ ...f, birth: e.target.value })} /></Field>
-            <Field label="Hándicap actual"><input style={inputStyle} type="number" inputMode="numeric" value={f.hcp} onChange={(e) => setF({ ...f, hcp: e.target.value })} placeholder="ej. 12" /></Field>
+            <Field label="Hándicap actual" hint="Si eres hándicap positivo (+2), escríbelo como −2"><input style={inputStyle} type="number" step="1" value={f.hcp} onChange={(e) => setF({ ...f, hcp: e.target.value })} placeholder="ej. 12 · +2 se escribe -2" /></Field>
           </div>
           <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: -4, marginBottom: 12 }}>
             Tu hándicap se usa como valor inicial cuando te suman a un grupo; el anotador puede ajustarlo el día de la ronda.
@@ -2954,7 +2964,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                 {playerList.map((p) => (
                   <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr", gap: 8, alignItems: "center", marginBottom: 6 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>
-                    <input style={{ ...inputStyle, padding: "8px 10px" }} type="number" inputMode="numeric" value={g.hcps[p.id] ?? ""}
+                    <input style={{ ...inputStyle, padding: "8px 10px" }} type="number" step="1" value={g.hcps[p.id] ?? ""}
                       onChange={(e) => setGroupHcp(g.id, p.id, e.target.value === "" ? "" : parseInt(e.target.value))} />
                     <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700 }}>Aj. {g.hcps[p.id] === "" || g.hcps[p.id] == null ? "—" : adjustedHcp(parseInt(g.hcps[p.id]) || 0, community.rulePct)}</div>
                   </div>
