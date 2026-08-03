@@ -216,8 +216,12 @@ Dentro de cada comunidad, además de la Money List:
   y Caja 10% por defecto, con nombres y porcentajes editables— más el
   acumulado de la temporada.
 
-- **Cara a cara**: compara a dos miembros en las fechas que jugaron juntos —
-  cuántas ganó cada uno, cuánta plata y los golpes de cada día.
+- **Cara a cara**: compara a dos miembros en las fechas que jugaron juntos, **por
+  score, no por plata**. Cada fecha la gana el **neto más bajo** —el del Medal si
+  esa fecha lo jugó, y si no, gross menos el hándicap con que jugó—, porque es lo
+  que pone a dos hándicaps distintos en la misma vara. Se ven las fechas ganadas,
+  el promedio de neto y de gross, el mejor neto, y la tabla fecha por fecha con
+  el neto y el gross de cada uno.
 
 Ambos cálculos replican las hojas `Normalizacion` y `POZO` de la planilla que
 el grupo llevaba en Excel.

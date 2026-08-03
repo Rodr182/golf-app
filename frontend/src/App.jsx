@@ -631,24 +631,42 @@ function playerMedalHistory(meId, rounds) {
   return out;
 }
 
-/* Cara a cara: cómo le fue a dos jugadores en las fechas que compartieron */
+/* Cara a cara: cómo jugaron dos jugadores en las fechas que compartieron.
+   Se compara por SCORE, no por plata. Gana la fecha el neto más bajo —el mismo
+   neto del Medal si esa fecha lo jugó, y si no, gross menos el hándicap del
+   día—, porque es lo que pone a dos hándicaps distintos en la misma vara. */
 function headToHead(aId, bId, rounds, communityId) {
   const filas = rounds.filter((r) => (!communityId || r.communityId === communityId) && !r.results.simple)
     .map((r) => {
       const ra = r.results.rows.find((x) => x.id === aId), rb = r.results.rows.find((x) => x.id === bId);
       if (!ra || !rb) return null;
-      let ga = null, gb = null;
+      const dato = { [aId]: {}, [bId]: {} };
       r.teams.forEach((t) => t.players.forEach((p) => {
-        const tot = p.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
-        if (p.id === aId) ga = tot; if (p.id === bId) gb = tot;
+        if (p.id !== aId && p.id !== bId) return;
+        dato[p.id].gross = p.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
+        dato[p.id].hcp = parseInt(p.hcp) || 0;
       }));
-      return { date: r.date, name: r.eventName || "Fecha", aMoney: ra.totalMoney, bMoney: rb.totalMoney, aGross: ga, bGross: gb };
+      const neto = (id, row) => {
+        const medal = (row.contests || []).find((c) => c.medal);
+        if (medal && medal.meta && medal.meta.netTotal != null) return medal.meta.netTotal;
+        const d = dato[id];
+        return d.gross == null ? null : d.gross - d.hcp;
+      };
+      return { date: r.date, name: r.eventName || "Fecha",
+        aGross: dato[aId].gross ?? null, bGross: dato[bId].gross ?? null,
+        aNet: neto(aId, ra), bNet: neto(bId, rb) };
     }).filter(Boolean);
-  const res = { fechas: filas.length, aMoney: 0, bMoney: 0, aGanó: 0, bGanó: 0, empates: 0, filas };
+  const res = { fechas: filas.length, aGanó: 0, bGanó: 0, empates: 0, filas,
+    aGrossProm: null, bGrossProm: null, aNetProm: null, bNetProm: null, aMejor: null, bMejor: null };
+  const prom = (k) => { const v = filas.map((f) => f[k]).filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+  const mejor = (k) => { const v = filas.map((f) => f[k]).filter((x) => x != null); return v.length ? Math.min(...v) : null; };
   filas.forEach((f) => {
-    res.aMoney += f.aMoney; res.bMoney += f.bMoney;
-    if (f.aMoney > f.bMoney) res.aGanó++; else if (f.bMoney > f.aMoney) res.bGanó++; else res.empates++;
+    if (f.aNet == null || f.bNet == null) { res.empates++; return; }
+    if (f.aNet < f.bNet) res.aGanó++; else if (f.bNet < f.aNet) res.bGanó++; else res.empates++;
   });
+  res.aGrossProm = prom("aGross"); res.bGrossProm = prom("bGross");
+  res.aNetProm = prom("aNet"); res.bNetProm = prom("bNet");
+  res.aMejor = mejor("aNet"); res.bMejor = mejor("bNet");
   return res;
 }
 
@@ -3677,7 +3695,8 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 15 }}>{nA}</div>
                       <div style={{ fontFamily: "'Fraunces'", fontSize: 34, fontWeight: 900, color: r.aGanó >= r.bGanó ? C.green : "#9aa69e" }}>{r.aGanó}</div>
-                      <div style={{ fontSize: 13, color: r.aMoney >= 0 ? C.green : C.red, fontWeight: 700 }}>{money(r.aMoney, cur)}</div>
+                      <div style={{ fontSize: 12.5, color: "#7a8780" }}>neto prom. <b>{r.aNetProm == null ? "—" : r.aNetProm.toFixed(1)}</b></div>
+                      <div style={{ fontSize: 12, color: "#9aa69e" }}>gross prom. {r.aGrossProm == null ? "—" : r.aGrossProm.toFixed(1)} · mejor neto {r.aMejor ?? "—"}</div>
                     </div>
                     <div style={{ color: "#9aa69e", fontSize: 12.5 }}>
                       <div style={{ fontWeight: 700 }}>{r.fechas} {r.fechas === 1 ? "fecha" : "fechas"}</div>
@@ -3686,10 +3705,11 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 15 }}>{nB}</div>
                       <div style={{ fontFamily: "'Fraunces'", fontSize: 34, fontWeight: 900, color: r.bGanó > r.aGanó ? C.green : "#9aa69e" }}>{r.bGanó}</div>
-                      <div style={{ fontSize: 13, color: r.bMoney >= 0 ? C.green : C.red, fontWeight: 700 }}>{money(r.bMoney, cur)}</div>
+                      <div style={{ fontSize: 12.5, color: "#7a8780" }}>neto prom. <b>{r.bNetProm == null ? "—" : r.bNetProm.toFixed(1)}</b></div>
+                      <div style={{ fontSize: 12, color: "#9aa69e" }}>gross prom. {r.bGrossProm == null ? "—" : r.bGrossProm.toFixed(1)} · mejor neto {r.bMejor ?? "—"}</div>
                     </div>
                   </div>
-                  <div style={{ fontSize: 12.5, color: "#7a8780", textAlign: "center", marginTop: 10 }}>Fechas en las que cada uno terminó por delante del otro en plata.</div>
+                  <div style={{ fontSize: 12.5, color: "#7a8780", textAlign: "center", marginTop: 10 }}>Fechas que ganó cada uno por <b>score</b>: gana el neto más bajo del día (gross menos el hándicap con que jugó).</div>
                 </Card>
                 <Card style={{ overflow: "hidden" }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
@@ -3698,12 +3718,15 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                   {r.filas.map((f, i) => (
                     <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", padding: "10px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
                       <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{f.name}</div><div style={{ fontSize: 11.5, color: "#9aa69e" }}>{f.date}</div></div>
-                      <div style={{ textAlign: "right", fontWeight: f.aMoney > f.bMoney ? 800 : 500, color: f.aMoney >= 0 ? C.green : C.red }}>
-                        {money(f.aMoney, cur)}<div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{f.aGross ?? "—"} golpes</div>
-                      </div>
-                      <div style={{ textAlign: "right", fontWeight: f.bMoney > f.aMoney ? 800 : 500, color: f.bMoney >= 0 ? C.green : C.red }}>
-                        {money(f.bMoney, cur)}<div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{f.bGross ?? "—"} golpes</div>
-                      </div>
+                      {[["a", f.aNet, f.aGross, f.bNet], ["b", f.bNet, f.bGross, f.aNet]].map(([lado, net, gross, otro]) => {
+                        const gana = net != null && otro != null && net < otro;
+                        return (
+                          <div key={lado} style={{ textAlign: "right", fontWeight: gana ? 800 : 500, color: gana ? C.green : C.ink }}>
+                            {net ?? "—"} neto{gana && " ✓"}
+                            <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{gross ?? "—"} gross</div>
+                          </div>
+                        );
+                      })}
                     </div>
                   ))}
                 </Card>
