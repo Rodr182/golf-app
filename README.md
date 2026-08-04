@@ -240,6 +240,12 @@ cuántas fechas jugó, y eso suma a la money list, al ranking y al pozo. **No se
 inventan rondas**: no hay tarjeta ni scores de esas fechas, por eso en la Money
 List las columnas «Mejor» y «Peor» solo miran lo jugado dentro de la app.
 
+En el **perfil del jugador** pasa lo mismo: el balance total, las rondas jugadas
+y la money list por comunidad suman esas fechas, con el desglose por temporada y
+una nota de cuánto viene de antes. Las tarjetas, el hoyo por hoyo y las
+estadísticas de scoring siguen mirando solo lo jugado dentro de la app, porque de
+las fechas previas no hay tarjeta.
+
 Se carga con la acción `Cargar temporada anterior a la app` (pestaña Actions),
 que lee `scripts/historico-<año>.json`. Ese archivo lleva **solo los ids internos
 de cada jugador, nunca nombres**, porque el repositorio es público. La misma

@@ -503,16 +503,36 @@ function communityMoneyList(communityId, rounds, temporada, community) {
 }
 
 /* Money list del jugador agrupada por comunidad */
-function playerMoneyByCommunity(meId, rounds) {
+function playerMoneyByCommunity(meId, rounds, communities = []) {
   const byComm = {};
+  const fila = (cid) => byComm[cid] || (byComm[cid] = {
+    communityId: cid, total: 0, rounds: 0, best: -Infinity, worst: Infinity,
+    hist: 0, histFechas: 0, temporadas: {},
+  });
+  const temp = (b, t) => b.temporadas[t] || (b.temporadas[t] = { temporada: t, total: 0, rounds: 0, hist: 0, histFechas: 0 });
+  // Lo jugado dentro de la app
   rounds.filter((r) => !r.results.simple).forEach((r) => {
     const row = r.results.rows.find((x) => x.id === meId);
     if (!row || row.guest) return;
-    const b = byComm[r.communityId] || (byComm[r.communityId] = { communityId: r.communityId, total: 0, rounds: 0, best: -Infinity, worst: Infinity });
+    const b = fila(r.communityId), t = temp(b, temporadaDe(r));
     b.total += row.totalMoney; b.rounds++;
+    t.total += row.totalMoney; t.rounds++;
     b.best = Math.max(b.best, row.totalMoney); b.worst = Math.min(b.worst, row.totalMoney);
   });
-  return Object.values(byComm);
+  // Y las fechas de cada temporada jugadas antes de usar la app
+  (communities || []).forEach((c) => {
+    Object.entries((c && c.historico) || {}).forEach(([temporada, h]) => {
+      const v = ((h && h.jugadores) || {})[meId];
+      if (!v) return;
+      const b = fila(c.id), t = temp(b, temporada);
+      const m = +v.money || 0, f = +v.fechas || 0;
+      b.total += m; b.rounds += f; b.hist += m; b.histFechas += f;
+      t.total += m; t.rounds += f; t.hist += m; t.histFechas += f;
+    });
+  });
+  return Object.values(byComm).map((b) => ({
+    ...b, temporadas: Object.values(b.temporadas).sort((x, y) => (x.temporada < y.temporada ? 1 : -1)),
+  }));
 }
 
 /* ---- RANKING DE LA COMUNIDAD ----
@@ -2335,9 +2355,12 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
     setPwMsg(err || "✓ Contraseña actualizada.");
     if (!err) setPw({ a: "", b: "" });
   };
-  const byComm = playerMoneyByCommunity(me.id, rounds);
+  const byComm = playerMoneyByCommunity(me.id, rounds, communities);
   const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id));
   const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
+  // Las fechas previas a la app también cuentan como rondas jugadas
+  const histFechas = byComm.reduce((s, b) => s + b.histFechas, 0);
+  const totalFechas = byComm.reduce((s, b) => s + b.rounds, 0);
   const cName = (id) => communities.find((c) => c.id === id)?.name || (id === "libre" ? "Ronda libre" : "Comunidad");
   const cCur = (id) => communities.find((c) => c.id === id)?.currency || "S/.";
   const courses = coursesProp || [];
@@ -2414,7 +2437,12 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
         </Card>
         <Card style={{ padding: 18 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Rondas jugadas</div>
-          <div style={{ fontFamily: "'Fraunces'", fontSize: 30, fontWeight: 900, color: C.green, marginTop: 4 }}>{myRounds.length}</div>
+          <div style={{ fontFamily: "'Fraunces'", fontSize: 30, fontWeight: 900, color: C.green, marginTop: 4 }}>{totalFechas}</div>
+          {histFechas > 0 && (
+            <div style={{ fontSize: 11.5, color: "#9aa69e", marginTop: 2 }}>
+              {myRounds.length} en la app · {histFechas} antes de usarla
+            </div>
+          )}
         </Card>
         <Card style={{ padding: 18 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Balance total</div>
@@ -2434,15 +2462,39 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
             <div>Comunidad</div><div style={{ textAlign: "center" }}>Rondas</div><div style={{ textAlign: "right" }}>Mejor</div><div style={{ textAlign: "right" }}>Peor</div><div style={{ textAlign: "right" }}>Acumulado</div>
           </div>
           {byComm.map((b, i) => (
-            <div key={b.communityId} style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr 1fr 1fr 1fr", padding: "11px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
-              <div style={{ fontWeight: 600 }}>{cName(b.communityId)}</div>
-              <div style={{ textAlign: "center" }}>{b.rounds}</div>
-              <div style={{ textAlign: "right", color: C.green, fontSize: 13 }}>{money(b.best, cCur(b.communityId))}</div>
-              <div style={{ textAlign: "right", color: C.red, fontSize: 13 }}>{money(b.worst, cCur(b.communityId))}</div>
-              <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 16, color: b.total >= 0 ? C.green : C.red }}>{money(b.total, cCur(b.communityId))}</div>
+            <div key={b.communityId} style={{ borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr 1fr 1fr 1fr", padding: "11px 14px", alignItems: "center" }}>
+                <div style={{ fontWeight: 600 }}>
+                  {cName(b.communityId)}
+                  {b.histFechas > 0 && (
+                    <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>
+                      incluye {money(b.hist, cCur(b.communityId))} de {b.histFechas} {b.histFechas === 1 ? "fecha jugada" : "fechas jugadas"} antes de usar la app
+                    </div>
+                  )}
+                </div>
+                <div style={{ textAlign: "center" }}>{b.rounds}</div>
+                <div style={{ textAlign: "right", color: C.green, fontSize: 13 }}>{Number.isFinite(b.best) ? money(b.best, cCur(b.communityId)) : "—"}</div>
+                <div style={{ textAlign: "right", color: C.red, fontSize: 13 }}>{Number.isFinite(b.worst) ? money(b.worst, cCur(b.communityId)) : "—"}</div>
+                <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 16, color: b.total >= 0 ? C.green : C.red }}>{money(b.total, cCur(b.communityId))}</div>
+              </div>
+              {b.temporadas.length > 1 && (
+                <div style={{ padding: "0 14px 10px 14px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {b.temporadas.map((t) => (
+                    <span key={t.temporada} style={{ fontSize: 11.5, color: "#7a8780", background: C.creamDk, borderRadius: 999, padding: "3px 10px" }}>
+                      <b>{t.temporada}</b>: {money(t.total, cCur(b.communityId))} en {t.rounds} {t.rounds === 1 ? "fecha" : "fechas"}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </Card>
+      )}
+      {byComm.some((b) => b.histFechas > 0) && (
+        <div style={{ fontSize: 12, color: "#7a8780", margin: "-14px 0 20px" }}>
+          De las fechas jugadas antes de usar la app solo tenemos el resultado en soles, no la tarjeta: por eso
+          «Mejor», «Peor» y las estadísticas de abajo miran únicamente las rondas jugadas dentro de la app.
+        </div>
       )}
 
       {/* ESTADÍSTICAS DE JUEGO */}
