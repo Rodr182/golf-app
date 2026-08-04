@@ -182,6 +182,30 @@ Puntos donde la planilla es explícita y la app los sigue:
 - **Préstamo** (regla 10): el jugador que completa un grupo de 3 se toma de un
   **grupo de cuatro**.
 
+## Inscripción y armado de grupos
+
+Los inscritos se numeran por **orden de llegada**, y ese orden manda si hay que
+dejar a alguien fuera: espera el último. Cada alta y cada baja lleva su hora, así
+que dos celulares inscribiendo gente a la vez no se pisan ni "reviven" a quien
+fue retirado.
+
+Al cerrar la inscripción la app **sugiere** el armado. Los grupos válidos son de
+3, 4 o 5 — nunca de 1 ni de 2, y confirmar los grupos exige que todos estén en
+ese rango:
+
+- Con **Priorizar grupos de 4** activada (por defecto, en ⚙️ Reglas): se juega en
+  grupos de cuatro, con un único grupo de 3 si sobran justo tres. Con 13
+  inscritos → 3 grupos de 4 y 1 en lista de espera; con 15 → 3 de 4 y 1 de 3.
+- Desactivada: juegan todos, completando con grupos de 3 o de 5. Con 13 → 4, 4
+  y 5; con 14 → 4, 4, 3 y 3.
+
+Cuando el armado deja gente esperando, la pantalla muestra también la
+alternativa donde juegan todos. Es una sugerencia: los grupos los arma el
+administrador.
+
+Las listas de jugadores de la comunidad —miembros, inscribir al evento,
+reemplazar a alguien en un grupo— van en **orden alfabético**.
+
 ## Grupos de 3 y de 5
 
 - **Grupo de 5**: la pareja base (los dos primeros del grupo) juega contra las
@@ -220,8 +244,11 @@ Dentro de cada comunidad, además de la Money List:
   score, no por plata**. Cada fecha la gana el **neto más bajo** —el del Medal si
   esa fecha lo jugó, y si no, gross menos el hándicap con que jugó—, porque es lo
   que pone a dos hándicaps distintos en la misma vara. Se ven las fechas ganadas,
-  el promedio de neto y de gross, el mejor neto, y la tabla fecha por fecha con
-  el neto y el gross de cada uno.
+  los **hoyos ganados**, el promedio de neto y de gross y el mejor neto.
+  Cada fecha se abre en un **match hoyo a hoyo** entre los dos: el neto y el
+  gross de cada hoyo, quién lo ganó, y el marcador acumulado (AS = empate). Es el
+  extracto del Individual general mirando solo a esos dos, con los mismos netos
+  que se jugaron ese día.
 
 Ambos cálculos replican las hojas `Normalizacion` y `POZO` de la planilla que
 el grupo llevaba en Excel.

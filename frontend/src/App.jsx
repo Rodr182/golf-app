@@ -315,7 +315,10 @@ function computeEvent(event, course, rules) {
       contests: detail[id].contests,
     };
   });
-  return { rows, eventStart, tokenValue: rules.tokenValue, breakdown };
+  // Se guardan las reglas con las que se calculó: sirven para rehacer los netos
+  // de esa fecha más adelante (cara a cara) aunque la comunidad cambie de reglas.
+  const reglasUsadas = { rulePct: rules.rulePct, regla8: !!rules.regla8, regla8Holes: tieHoles, multiStroke };
+  return { rows, eventStart, tokenValue: rules.tokenValue, breakdown, rules: reglasUsadas };
 }
 
 /* Ronda simple (1 o 2 jugadores por grupo): solo tarjeta, sin apuestas.
@@ -635,7 +638,39 @@ function playerMedalHistory(meId, rounds) {
    Se compara por SCORE, no por plata. Gana la fecha el neto más bajo —el mismo
    neto del Medal si esa fecha lo jugó, y si no, gross menos el hándicap del
    día—, porque es lo que pone a dos hándicaps distintos en la misma vara. */
-function headToHead(aId, bId, rounds, communityId) {
+/* Armado sugerido de grupos a partir de cuántos se inscribieron.
+   Los grupos válidos son de 3, 4 o 5: nunca de 1 ni de 2.
+   - `prefer4` (regla de la comunidad): se juega en grupos de CUATRO. Solo se
+     admite un grupo de 3 cuando sobran exactamente 3; si sobran 1 o 2, esos
+     entran en lista de espera. Con 13 inscritos -> 3 grupos de 4 y 1 esperando.
+   - sin `prefer4`: juegan todos, completando con grupos de 3 o de 5.
+     Con 13 -> 4, 4 y 5; con 14 -> 4, 4, 3 y 3. */
+function armadoSugerido(n, prefer4 = true) {
+  if (n < 3) return { grupos: [], espera: n, motivo: "Se necesitan al menos 3 jugadores." };
+  const k = Math.floor(n / 4), r = n % 4;
+  if (prefer4) {
+    if (r === 0) return { grupos: new Array(k).fill(4), espera: 0 };
+    if (r === 3) return { grupos: [...new Array(k).fill(4), 3], espera: 0 };
+    return { grupos: new Array(k).fill(4), espera: r };
+  }
+  if (r === 0) return { grupos: new Array(k).fill(4), espera: 0 };
+  if (r === 3) return { grupos: [...new Array(k).fill(4), 3], espera: 0 };
+  if (r === 1) return { grupos: [...new Array(k - 1).fill(4), 5], espera: 0 };
+  return { grupos: [...new Array(k - 1).fill(4), 3, 3], espera: 0 };   // r === 2
+}
+/* Texto corto del armado: "3 grupos de 4 · 1 grupo de 3" */
+const textoArmado = (grupos) => {
+  const cuenta = {}; grupos.forEach((g) => (cuenta[g] = (cuenta[g] || 0) + 1));
+  return Object.keys(cuenta).sort((a, b) => b - a)
+    .map((t) => `${cuenta[t]} ${cuenta[t] === 1 ? "grupo" : "grupos"} de ${t}`).join(" · ") || "—";
+};
+
+/* Miembros de la comunidad en orden alfabético (para todas las listas). */
+const miembrosAlfabetico = (community, players) =>
+  [...(community.members || [])].sort((a, b) =>
+    resolveName(a, players).localeCompare(resolveName(b, players), "es", { sensitivity: "base" }));
+
+function headToHead(aId, bId, rounds, communityId, courses = [], reglasComunidad = null) {
   const filas = rounds.filter((r) => (!communityId || r.communityId === communityId) && !r.results.simple)
     .map((r) => {
       const ra = r.results.rows.find((x) => x.id === aId), rb = r.results.rows.find((x) => x.id === bId);
@@ -652,12 +687,15 @@ function headToHead(aId, bId, rounds, communityId) {
         const d = dato[id];
         return d.gross == null ? null : d.gross - d.hcp;
       };
-      return { date: r.date, name: r.eventName || "Fecha",
+      const curso = courses.find((c) => c.id === r.courseId);
+      return { date: r.date, name: r.eventName || "Fecha", courseName: curso?.name || "",
         aGross: dato[aId].gross ?? null, bGross: dato[bId].gross ?? null,
-        aNet: neto(aId, ra), bNet: neto(bId, rb) };
+        aNet: neto(aId, ra), bNet: neto(bId, rb),
+        match: matchHoyoAHoyo(aId, bId, r, curso, reglasComunidad) };
     }).filter(Boolean);
   const res = { fechas: filas.length, aGanó: 0, bGanó: 0, empates: 0, filas,
-    aGrossProm: null, bGrossProm: null, aNetProm: null, bNetProm: null, aMejor: null, bMejor: null };
+    aGrossProm: null, bGrossProm: null, aNetProm: null, bNetProm: null, aMejor: null, bMejor: null,
+    aHoyos: 0, bHoyos: 0, hoyosEmpatados: 0 };
   const prom = (k) => { const v = filas.map((f) => f[k]).filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
   const mejor = (k) => { const v = filas.map((f) => f[k]).filter((x) => x != null); return v.length ? Math.min(...v) : null; };
   filas.forEach((f) => {
@@ -667,7 +705,40 @@ function headToHead(aId, bId, rounds, communityId) {
   res.aGrossProm = prom("aGross"); res.bGrossProm = prom("bGross");
   res.aNetProm = prom("aNet"); res.bNetProm = prom("bNet");
   res.aMejor = mejor("aNet"); res.bMejor = mejor("bNet");
+  filas.forEach((f) => { if (f.match) { res.aHoyos += f.match.aHoyos; res.bHoyos += f.match.bHoyos; res.hoyosEmpatados += f.match.empatados; } });
   return res;
+}
+
+/* Match hoyo a hoyo entre dos jugadores en una fecha: es el extracto del
+   concurso Individual general mirando solo a esos dos. Se rehacen los netos con
+   las reglas de esa fecha (guardadas en results.rules; para fechas antiguas se
+   usan las de la comunidad) y la base del evento, que es la que se jugó ese día. */
+function matchHoyoAHoyo(aId, bId, round, course, reglasComunidad) {
+  if (!course || !course.strokes) return null;
+  const rg = round.results.rules || reglasComunidad || {};
+  const pct = rg.rulePct ?? 100;
+  const multi = !!rg.multiStroke;
+  const r8 = rg.regla8 && (rg.regla8Holes || []).length
+    ? { holes: new Set((rg.regla8Holes || []).map((h) => h - 1)), pars: course.pars || [] } : null;
+  const todos = [];
+  (round.teams || []).forEach((t) => (t.players || []).forEach((p) => todos.push(p)));
+  const pa = todos.find((p) => p.id === aId), pb = todos.find((p) => p.id === bId);
+  if (!pa || !pb) return null;
+  const base = Math.min(...todos.map((p) => adjustedHcp(parseInt(p.hcp) || 0, pct)));
+  const netDe = (p) => netScores(p.gross.map((g) => parseInt(g) || 0), adjustedHcp(parseInt(p.hcp) || 0, pct) - base, course.strokes, multi, r8);
+  const na = netDe(pa), nb = netDe(pb);
+  const start = round.results.eventStart || 1;
+  const hoyos = playOrder(start).map((h) => ({
+    hoyo: h + 1, par: (course.pars || [])[h] ?? null, si: course.strokes[h],
+    aGross: parseInt(pa.gross[h]) || null, bGross: parseInt(pb.gross[h]) || null,
+    aNet: na[h], bNet: nb[h],
+    gana: na[h] < nb[h] ? "a" : nb[h] < na[h] ? "b" : null,
+  }));
+  const aHoyos = hoyos.filter((x) => x.gana === "a").length;
+  const bHoyos = hoyos.filter((x) => x.gana === "b").length;
+  return { hoyos, aHoyos, bHoyos, empatados: 18 - aHoyos - bHoyos, start,
+    aStrokes: Math.min(adjustedHcp(parseInt(pa.hcp) || 0, pct) - base, multi ? 999 : 18),
+    bStrokes: Math.min(adjustedHcp(parseInt(pb.hcp) || 0, pct) - base, multi ? 999 : 18) };
 }
 
 /* Movimiento del hándicap del jugador a lo largo de las rondas (más antiguo primero) */
@@ -692,6 +763,30 @@ const localStore = {
    Así el anotador del grupo 1 no borra lo del grupo 3. */
 function mergeEventPair(pref, other) {
   const merged = { ...other, ...pref };
+  // Inscritos: se unen los dos celulares en vez de que gane el último que
+  // escribió, para no perder a quien se inscribió desde otro teléfono. Cada
+  // alta y cada baja lleva su hora; sobrevive la más reciente de las dos, así
+  // una baja tampoco "revive" al fusionar. El orden es el de inscripción.
+  const maxPorClave = (a, b) => {
+    const out = { ...(a || {}) };
+    Object.entries(b || {}).forEach(([k, v]) => { if (out[k] == null || v > out[k]) out[k] = v; });
+    return out;
+  };
+  merged.regAt = maxPorClave(other.regAt, pref.regAt);
+  merged.unregAt = maxPorClave(other.unregAt, pref.unregAt);
+  const orden = [];
+  [...(pref.registered || []), ...(other.registered || [])].forEach((id) => { if (!orden.includes(id)) orden.push(id); });
+  const pos = {}; orden.forEach((id, i) => (pos[id] = i));
+  const inscrito = (id) => {
+    const alta = merged.regAt[id], baja = merged.unregAt[id];
+    if (alta == null) return baja == null;      // evento viejo, sin sellos: se respeta la lista
+    return baja == null || baja < alta;         // se volvió a inscribir después de la baja
+  };
+  merged.registered = orden.filter(inscrito)
+    .sort((x, y) => ((merged.regAt[x] ?? pos[x]) - (merged.regAt[y] ?? pos[y])) || (pos[x] - pos[y]));
+  const gIds = new Set();
+  merged.guests = [...(pref.guests || []), ...(other.guests || [])]
+    .filter((g) => g && !gIds.has(g.id) && inscrito(g.id) && gIds.add(g.id));
   const oGroups = {}; (other.groups || []).forEach((g) => (oGroups[g.id] = g));
   merged.groups = (pref.groups || []).map((g) => {
     const og = oGroups[g.id];
@@ -1776,7 +1871,7 @@ function StartRound({ courses, communities, players, me, onStart, onCancel, init
       const ids = [me.id, ...players.filter((p) => p.email && p.id !== me.id).map((p) => p.id)];
       return [...ids.map((id) => ({ id, name: resolveName(id, players) })), ...guests];
     }
-    const ids = [...community.members];
+    const ids = miembrosAlfabetico(community, players);
     if (!ids.includes(me.id)) ids.unshift(me.id);
     return ids.map((id) => ({ id, name: resolveName(id, players) }));
   }, [community, players, me, guests]);
@@ -2596,7 +2691,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
   const eventGuests = event.guests || [];
   const guestIdSet = new Set(eventGuests.map((g) => g.id));
-  const memberPool = community.members.map((id) => ({ id, name: resolveName(id, players) }));
+  const memberPool = miembrosAlfabetico(community, players).map((id) => ({ id, name: resolveName(id, players) }));
 
   /* ---- ANOTADOR DEL GRUPO ----
      Anota UNA sola persona por grupo. Tiene que tener cuenta: un invitado no
@@ -2619,7 +2714,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const addGuest = () => {
     const name = guestName.trim(); if (!name) return;
     const id = "eguest" + Date.now();
-    updateEvent({ guests: [...eventGuests, { id, name, guest: true }], registered: [...registered, id] });
+    updateEvent({ guests: [...eventGuests, { id, name, guest: true }], registered: [...registered, id], regAt: { ...(event.regAt || {}), [id]: Date.now() } });
     setGuestName("");
   };
   const groupPlayerIds = (gid) => groups.filter((g) => g.id !== gid).flatMap((g) => g.playerIds);
@@ -2640,7 +2735,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const toggleRegister = (pid) => {
     const has = registered.includes(pid);
     if (has) { unregister(pid); return; }
-    updateEvent({ registered: [...registered, pid] });
+    // se guarda la hora: el orden de inscripción define la prioridad y así
+    // sobrevive a que dos celulares inscriban gente a la vez
+    updateEvent({ registered: [...registered, pid], regAt: { ...(event.regAt || {}), [pid]: Date.now() } });
   };
   // Retira a un inscrito (miembro o invitado): lo saca de la lista, de su
   // grupo si ya estaba asignado, y borra sus scores y su hándicap del día.
@@ -2666,6 +2763,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     });
     updateEvent({
       registered: registered.filter((x) => x !== pid),
+      unregAt: { ...(event.unregAt || {}), [pid]: Date.now() },
       guests: eventGuests.filter((g) => g.id !== pid),
       groups: nuevosGrupos,
     });
@@ -2767,6 +2865,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   // ---- render por estado ----
   if (event.status === "inscripcion") {
     const iAmIn = registered.includes(me.id);
+    const prefer4 = community.prefer4 !== false;
+    const armado = armadoSugerido(registered.length, prefer4);
+    const cupos = armado.grupos.reduce((s, g) => s + g, 0);
     return (
       <div>
         <Head />
@@ -2783,12 +2884,18 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
             {registered.length === 0 && <div style={{ color: "#7a8780", fontSize: 13.5 }}>Nadie inscrito todavía. Usa "Avisar por WhatsApp" para convocar a la comunidad.</div>}
-            {registered.map((id) => {
+            {registered.map((id, i) => {
               const esInvitado = guestIdSet.has(id);
               const puedoRetirar = admin || id === me.id;
+              const espera = i >= cupos;
               return (
-                <span key={id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: esInvitado ? C.gold : C.green, color: esInvitado ? "#3a2c0a" : C.lime, borderRadius: 999, padding: puedoRetirar ? "2px 4px 2px 10px" : "2px 10px", fontSize: 12, fontWeight: 700 }}>
-                  {esInvitado ? "🎟️ " : ""}{resolveName(id, players)}
+                <span key={id} title={espera ? "En lista de espera" : `${i + 1}º en inscribirse`}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, background: espera ? "transparent" : esInvitado ? C.gold : C.green,
+                    border: espera ? `1.5px dashed ${C.line}` : "none", color: espera ? "#7a8780" : esInvitado ? "#3a2c0a" : C.lime,
+                    borderRadius: 999, padding: puedoRetirar ? "2px 4px 2px 10px" : "2px 10px", fontSize: 12, fontWeight: 700 }}>
+                  <span style={{ opacity: .65, fontWeight: 800 }}>{i + 1}.</span>
+                  {esInvitado ? " 🎟️ " : " "}{resolveName(id, players)}
+                  {espera && <span style={{ fontSize: 10.5, fontWeight: 700 }}>· espera</span>}
                   {puedoRetirar && (
                     <button onClick={() => unregister(id)} title={`Retirar a ${resolveName(id, players)}`}
                       style={{ border: "none", background: "rgba(0,0,0,.14)", color: "inherit", cursor: "pointer", borderRadius: 999, width: 18, height: 18, lineHeight: 1, fontSize: 12, fontWeight: 800, padding: 0 }}>✕</button>
@@ -2797,6 +2904,20 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               );
             })}
           </div>
+          {registered.length >= 3 && (
+            <div style={{ marginTop: 12, padding: 12, background: C.cream, borderRadius: 12, fontSize: 13 }}>
+              <div><b style={{ color: C.green }}>{registered.length} inscritos → {textoArmado(armado.grupos)}</b>{armado.espera > 0 && <> · <b style={{ color: C.gold }}>{armado.espera} en lista de espera</b></>}</div>
+              <div style={{ color: "#7a8780", fontSize: 12.5, marginTop: 4 }}>
+                Los números son el orden de inscripción: si hay que dejar gente fuera, esperan los últimos.
+                {prefer4 ? " La comunidad prioriza grupos de 4." : " La comunidad completa con grupos de 3 o de 5."}
+              </div>
+              {armado.espera > 0 && (
+                <div style={{ color: "#7a8780", fontSize: 12.5, marginTop: 4 }}>
+                  Si prefieren que jueguen todos: <b>{textoArmado(armadoSugerido(registered.length, false).grupos)}</b>. El armado es una sugerencia; los grupos los haces tú en el siguiente paso.
+                </div>
+              )}
+            </div>
+          )}
           {registered.length > 0 && (admin || registered.includes(me.id)) && (
             <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>Toca la ✕ para retirar a alguien que ya no puede jugar.</div>
           )}
@@ -2862,7 +2983,20 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                 </div>
               )}
             </Card>
-            {unassigned.length > 0 && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Sin asignar: {unassigned.map((id) => resolveName(id, players)).join(", ")}</div>}
+            {(() => {
+              const armado = armadoSugerido(registered.length, community.prefer4 !== false);
+              return (
+                <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>
+                  <div><b style={{ color: C.green }}>{registered.length} inscritos → sugerido: {textoArmado(armado.grupos)}</b>{armado.espera > 0 && <> · {armado.espera} en lista de espera</>}</div>
+                  {unassigned.length > 0 && (
+                    <div style={{ marginTop: 3 }}>
+                      Sin asignar ({unassigned.length}): {unassigned.map((id, i) => `${registered.indexOf(id) + 1}. ${resolveName(id, players)}`).join(" · ")}
+                      <span style={{ display: "block", marginTop: 2 }}>El número es el orden de inscripción; quien quede fuera debería ser el último.</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {groups.map((g) => (
               <Card key={g.id} style={{ padding: 16, marginBottom: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -3150,7 +3284,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                       <Field label="Entra">
                         <select style={{ ...inputStyle, padding: "8px 10px" }} value={swapIn} onChange={(e) => setSwapIn(e.target.value)}>
                           <option value="">Elegir…</option>
-                          {community.members.filter((m) => !groups.some((gr) => gr.playerIds.includes(m))).map((pid) => (
+                          {miembrosAlfabetico(community, players).filter((m) => !groups.some((gr) => gr.playerIds.includes(m))).map((pid) => (
                             <option key={pid} value={pid}>{resolveName(pid, players)}</option>
                           ))}
                         </select>
@@ -3276,6 +3410,7 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
     front: community.bet.front, back: community.bet.back, match: community.bet.match, bye: community.bet.bye,
     medalTokens: community.medal?.tokens || 0, medalPct: community.medal?.rulePct || 100, regla8: !!community.regla8,
     multiStroke: !!community.multiStroke,
+    prefer4: community.prefer4 !== false,
   });
   const [map, setMap] = useState(community.regla8Map || {});
   const [rk, setRk] = useState({ wMoney: rankWeights(community).pctMoney, wPart: rankWeights(community).pctPart });
@@ -3321,9 +3456,25 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
           </span>
         </span>
       </label>
-      <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, cursor: "pointer" }}>
-        <input type="checkbox" checked={f.regla8} onChange={(e) => setF({ ...f, regla8: e.target.checked })} style={{ width: 18, height: 18 }} />
-        <span style={{ fontSize: 13.5 }}><b>Regla 8</b>: en los hoyos marcados abajo, el stroke solo sirve para empatar (no para ganar el hoyo).</span>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={f.prefer4} onChange={(e) => setF({ ...f, prefer4: e.target.checked })} style={{ width: 18, height: 18, marginTop: 2 }} />
+        <span style={{ fontSize: 13.5 }}>
+          <b>Priorizar grupos de 4</b>: al cerrar la inscripción se sugiere jugar en grupos de cuatro (con un solo grupo de 3 si sobran justo tres).
+          <span style={{ display: "block", color: "#7a8780", fontSize: 12.5, marginTop: 2 }}>
+            {f.prefer4
+              ? "Activada: con 13 inscritos se sugieren 3 grupos de 4 y el último en inscribirse queda en lista de espera."
+              : "Desactivada: juegan todos, completando con grupos de 3 o de 5 (13 inscritos → 4, 4 y 5)."}
+          </span>
+        </span>
+      </label>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={f.regla8} onChange={(e) => setF({ ...f, regla8: e.target.checked })} style={{ width: 18, height: 18, marginTop: 2 }} />
+        <span style={{ fontSize: 13.5 }}>
+          <b>Regla 8</b>: en los hoyos marcados abajo (par 3), el stroke solo sirve para llegar al par.
+          <span style={{ display: "block", color: "#7a8780", fontSize: 12.5, marginTop: 2 }}>
+            Un gross de 4 con stroke queda en 3; uno de 3 se queda en 3, el stroke no lo baja a 2.
+          </span>
+        </span>
       </label>
       {f.regla8 && (
         <div style={{ padding: 12, background: C.cream, borderRadius: 12, marginBottom: 14 }}>
@@ -3384,12 +3535,74 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
           rulePct: +f.rulePct || 0, tokenValue: +f.tokenValue || 0, currency: f.currency,
           bet: { front: +f.front || 0, back: +f.back || 0, match: +f.match || 0, bye: +f.bye || 0 },
           medal: { tokens: +f.medalTokens || 0, rulePct: +f.medalPct || 100 },
-          regla8: !!f.regla8, regla8Map: map, multiStroke: !!f.multiStroke,
+          regla8: !!f.regla8, regla8Map: map, multiStroke: !!f.multiStroke, prefer4: !!f.prefer4,
           rank: { wMoney: +rk.wMoney || 0, wPart: +rk.wPart || 0 },
           pozo: pz.filter((c) => (c.name || "").trim()).map((c) => ({ name: c.name.trim(), pct: +c.pct || 0 })),
         })}>Guardar reglas</Btn>
       </div>
     </Card>
+  );
+}
+
+/* Tira hoyo a hoyo del match entre dos jugadores en una fecha. */
+function MatchHoyoAHoyo({ m, nA, nB }) {
+  const corto = (n) => (n || "").split(" ")[0];
+  let acum = 0;
+  const estados = m.hoyos.map((h) => { acum += h.gana === "a" ? 1 : h.gana === "b" ? -1 : 0; return acum; });
+  const celda = (h, lado) => {
+    const gana = h.gana === lado;
+    return (
+      <td key={h.hoyo} style={{ padding: "3px 2px", textAlign: "center", background: gana ? "rgba(45,106,79,.14)" : "transparent", fontWeight: gana ? 800 : 500, color: gana ? C.green : C.ink }}>
+        {lado === "a" ? h.aNet : h.bNet}
+        <div style={{ fontSize: 9.5, color: "#9aa69e", fontWeight: 500 }}>{lado === "a" ? h.aGross : h.bGross}</div>
+      </td>
+    );
+  };
+  return (
+    <div style={{ padding: "0 14px 14px" }}>
+      <div style={{ fontSize: 12, color: "#7a8780", marginBottom: 6 }}>
+        Neto de cada hoyo (gross en gris) · salida por el hoyo {m.start} ·
+        strokes del día: {corto(nA)} {m.aStrokes} · {corto(nB)} {m.bStrokes}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 560 }}>
+          <thead>
+            <tr style={{ color: "#7a8780" }}>
+              <th style={{ textAlign: "left", padding: "3px 8px 3px 0", whiteSpace: "nowrap" }}>Hoyo</th>
+              {m.hoyos.map((h) => <th key={h.hoyo} style={{ padding: "3px 2px", minWidth: 26, fontWeight: 700 }}>{h.hoyo}</th>)}
+              <th style={{ padding: "3px 8px" }}>Gana</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style={{ borderTop: `1px solid ${C.line}` }}>
+              <td style={{ padding: "3px 8px 3px 0", fontWeight: 700, whiteSpace: "nowrap" }}>{corto(nA)}</td>
+              {m.hoyos.map((h) => celda(h, "a"))}
+              <td style={{ padding: "3px 8px", fontWeight: 800, color: C.green, textAlign: "center" }}>{m.aHoyos}</td>
+            </tr>
+            <tr style={{ borderTop: `1px solid ${C.line}` }}>
+              <td style={{ padding: "3px 8px 3px 0", fontWeight: 700, whiteSpace: "nowrap" }}>{corto(nB)}</td>
+              {m.hoyos.map((h) => celda(h, "b"))}
+              <td style={{ padding: "3px 8px", fontWeight: 800, color: C.green, textAlign: "center" }}>{m.bHoyos}</td>
+            </tr>
+            <tr style={{ borderTop: `1px solid ${C.line}`, color: "#7a8780" }}>
+              <td style={{ padding: "3px 8px 3px 0", whiteSpace: "nowrap" }}>Va ganando</td>
+              {m.hoyos.map((h, i) => (
+                <td key={h.hoyo} style={{ padding: "3px 2px", textAlign: "center", fontWeight: 700, color: estados[i] > 0 ? C.green : estados[i] < 0 ? C.red : "#9aa69e" }}>
+                  {estados[i] === 0 ? "AS" : Math.abs(estados[i])}
+                </td>
+              ))}
+              <td style={{ padding: "3px 8px" }} />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 12, color: "#7a8780", marginTop: 6 }}>
+        {m.aHoyos === m.bHoyos
+          ? `Empatados ${m.aHoyos}–${m.bHoyos}, con ${m.empatados} hoyos partidos.`
+          : `${m.aHoyos > m.bHoyos ? corto(nA) : corto(nB)} ganó el match ${Math.max(m.aHoyos, m.bHoyos)}–${Math.min(m.aHoyos, m.bHoyos)}, con ${m.empatados} hoyos partidos.`}
+        {" "}«Va ganando» es la diferencia acumulada: AS es empate.
+      </div>
+    </div>
   );
 }
 
@@ -3402,6 +3615,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
   const [evForm, setEvForm] = useState({ name: "", courseId: courses[0]?.id, date: new Date().toISOString().slice(0, 10) });
   const [rankSort, setRankSort] = useState("rank");
   const [h2h, setH2h] = useState({ a: me.id, b: "" });
+  const [h2hAbierta, setH2hAbierta] = useState(null);   // qué fecha muestra el hoyo a hoyo
   const cur = community.currency;
   const commRounds = rounds.filter((r) => r.communityId === community.id);
   const list = communityMoneyList(community.id, rounds);
@@ -3524,7 +3738,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
           )}
           {isOwner && <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 10 }}>Como dueño, puedes nombrar administradores (pueden crear eventos, editar reglas y gestionar jugadores).</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
-            {community.members.map((id) => {
+            {miembrosAlfabetico(community, players).map((id) => {
               const owner = community.admin === id;
               const adminFlag = (community.admins || []).includes(id);
               const isMe = id === me.id;
@@ -3665,10 +3879,10 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
 
       {/* CARA A CARA: cómo le fue a dos jugadores en las fechas que compartieron */}
       {tab === "caracara" && (() => {
-        const opciones = community.members.map((id) => ({ id, name: resolveName(id, players) })).sort((x, y) => x.name.localeCompare(y.name));
+        const opciones = miembrosAlfabetico(community, players).map((id) => ({ id, name: resolveName(id, players) }));
         const sel = (k) => (e) => setH2h({ ...h2h, [k]: e.target.value });
         const listo = h2h.a && h2h.b && h2h.a !== h2h.b;
-        const r = listo ? headToHead(h2h.a, h2h.b, rounds, community.id) : null;
+        const r = listo ? headToHead(h2h.a, h2h.b, rounds, community.id, courses, { rulePct: community.rulePct, regla8: community.regla8, regla8Holes: [], multiStroke: community.multiStroke }) : null;
         const nA = resolveName(h2h.a, players), nB = resolveName(h2h.b, players);
         return (
           <div>
@@ -3695,40 +3909,59 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 15 }}>{nA}</div>
                       <div style={{ fontFamily: "'Fraunces'", fontSize: 34, fontWeight: 900, color: r.aGanó >= r.bGanó ? C.green : "#9aa69e" }}>{r.aGanó}</div>
-                      <div style={{ fontSize: 12.5, color: "#7a8780" }}>neto prom. <b>{r.aNetProm == null ? "—" : r.aNetProm.toFixed(1)}</b></div>
-                      <div style={{ fontSize: 12, color: "#9aa69e" }}>gross prom. {r.aGrossProm == null ? "—" : r.aGrossProm.toFixed(1)} · mejor neto {r.aMejor ?? "—"}</div>
+                      <div style={{ fontSize: 12.5, color: "#7a8780" }}><b>{r.aHoyos}</b> hoyos ganados</div>
+                      <div style={{ fontSize: 12, color: "#9aa69e" }}>neto prom. {r.aNetProm == null ? "—" : r.aNetProm.toFixed(1)} · gross prom. {r.aGrossProm == null ? "—" : r.aGrossProm.toFixed(1)} · mejor neto {r.aMejor ?? "—"}</div>
                     </div>
                     <div style={{ color: "#9aa69e", fontSize: 12.5 }}>
                       <div style={{ fontWeight: 700 }}>{r.fechas} {r.fechas === 1 ? "fecha" : "fechas"}</div>
                       {r.empates > 0 && <div>{r.empates} {r.empates === 1 ? "empate" : "empates"}</div>}
+                      {r.hoyosEmpatados > 0 && <div style={{ marginTop: 4 }}>{r.hoyosEmpatados} hoyos<br />empatados</div>}
                     </div>
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 15 }}>{nB}</div>
                       <div style={{ fontFamily: "'Fraunces'", fontSize: 34, fontWeight: 900, color: r.bGanó > r.aGanó ? C.green : "#9aa69e" }}>{r.bGanó}</div>
-                      <div style={{ fontSize: 12.5, color: "#7a8780" }}>neto prom. <b>{r.bNetProm == null ? "—" : r.bNetProm.toFixed(1)}</b></div>
-                      <div style={{ fontSize: 12, color: "#9aa69e" }}>gross prom. {r.bGrossProm == null ? "—" : r.bGrossProm.toFixed(1)} · mejor neto {r.bMejor ?? "—"}</div>
+                      <div style={{ fontSize: 12.5, color: "#7a8780" }}><b>{r.bHoyos}</b> hoyos ganados</div>
+                      <div style={{ fontSize: 12, color: "#9aa69e" }}>neto prom. {r.bNetProm == null ? "—" : r.bNetProm.toFixed(1)} · gross prom. {r.bGrossProm == null ? "—" : r.bGrossProm.toFixed(1)} · mejor neto {r.bMejor ?? "—"}</div>
                     </div>
                   </div>
-                  <div style={{ fontSize: 12.5, color: "#7a8780", textAlign: "center", marginTop: 10 }}>Fechas que ganó cada uno por <b>score</b>: gana el neto más bajo del día (gross menos el hándicap con que jugó).</div>
+                  <div style={{ fontSize: 12.5, color: "#7a8780", textAlign: "center", marginTop: 10 }}>
+                    El número grande son las <b>fechas</b> que ganó cada uno (neto más bajo del día).
+                    Los <b>hoyos ganados</b> son el match entre los dos, hoyo por hoyo, con los mismos netos del Individual general.
+                  </div>
                 </Card>
                 <Card style={{ overflow: "hidden" }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
                     <div>Fecha</div><div style={{ textAlign: "right" }}>{nA.split(" ")[0]}</div><div style={{ textAlign: "right" }}>{nB.split(" ")[0]}</div>
                   </div>
-                  {r.filas.map((f, i) => (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", padding: "10px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
-                      <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{f.name}</div><div style={{ fontSize: 11.5, color: "#9aa69e" }}>{f.date}</div></div>
-                      {[["a", f.aNet, f.aGross, f.bNet], ["b", f.bNet, f.bGross, f.aNet]].map(([lado, net, gross, otro]) => {
-                        const gana = net != null && otro != null && net < otro;
-                        return (
-                          <div key={lado} style={{ textAlign: "right", fontWeight: gana ? 800 : 500, color: gana ? C.green : C.ink }}>
-                            {net ?? "—"} neto{gana && " ✓"}
-                            <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{gross ?? "—"} gross</div>
-                          </div>
-                        );
-                      })}
+                  {r.filas.map((f, i) => {
+                    const abierta = h2hAbierta === i;
+                    return (
+                    <div key={i} style={{ borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", padding: "10px 14px", alignItems: "center" }}>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 13.5 }}>{f.name}</div>
+                          <div style={{ fontSize: 11.5, color: "#9aa69e" }}>{f.date}</div>
+                          {f.match && (
+                            <button onClick={() => setH2hAbierta(abierta ? null : i)}
+                              style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12, padding: "3px 0 0", fontFamily: "'Spline Sans',sans-serif" }}>
+                              {abierta ? "Ocultar hoyos ▲" : `Hoyo a hoyo ${f.match.aHoyos}–${f.match.bHoyos} ▼`}
+                            </button>
+                          )}
+                        </div>
+                        {[["a", f.aNet, f.aGross, f.bNet], ["b", f.bNet, f.bGross, f.aNet]].map(([lado, net, gross, otro]) => {
+                          const gana = net != null && otro != null && net < otro;
+                          return (
+                            <div key={lado} style={{ textAlign: "right", fontWeight: gana ? 800 : 500, color: gana ? C.green : C.ink }}>
+                              {net ?? "—"} neto{gana && " ✓"}
+                              <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{gross ?? "—"} gross</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {abierta && f.match && <MatchHoyoAHoyo m={f.match} nA={nA} nB={nB} />}
                     </div>
-                  ))}
+                    );
+                  })}
                 </Card>
               </div>
             )}
