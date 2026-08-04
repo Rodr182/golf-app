@@ -57,49 +57,52 @@ jobs:
           q "select c->>'name' as nombre, c->>'_rev' as rev, (select count(*) from jsonb_object_keys(coalesce(c->'historico','{}'::jsonb))) as temporadas_historicas from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
           echo ""
 
+          # El JSON se mete en el SQL con "dollar quoting" ($hist$…$hist$): así
+          # no hay que escapar comillas y no se puede colar nada raro.
           if [ "$BORRAR" = "BORRAR" ]; then
-            nuevo='null'
             echo "== Quitando el histórico de $TEMPORADA en «$COMUNIDAD» =="
+            sql="update public.collections set value = (
+                   select jsonb_agg(case when c->>'name' = \$nom\$${COMUNIDAD}\$nom\$
+                     then c || jsonb_build_object(
+                            'historico', (coalesce(c->'historico','{}'::jsonb) - \$tmp\$${TEMPORADA}\$tmp\$),
+                            '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
+                     else c end)
+                   from jsonb_array_elements(value) c)
+                 where key = 'gb_comm_v2';"
           else
-            nuevo=$(jq -c '{fechas, desde, hasta, nota, jugadores, pozo}' "$archivo")
+            hist=$(jq -c '{fechas, desde, hasta, nota, jugadores, pozo}' "$archivo")
             echo "== Cargando en «$COMUNIDAD» la temporada $TEMPORADA =="
             jq -r '"   \(.fechas) fechas, de \(.desde) a \(.hasta), \(.jugadores | length) jugadores"' "$archivo"
             jq -r '"   suma de la plata: \([.jugadores[].money] | add)"' "$archivo"
+            case "$hist" in *'$hist$'*) echo "ERROR: el JSON contiene el delimitador"; exit 1;; esac
+            sql="update public.collections set value = (
+                   select jsonb_agg(case when c->>'name' = \$nom\$${COMUNIDAD}\$nom\$
+                     then c || jsonb_build_object(
+                            'historico', coalesce(c->'historico','{}'::jsonb) || jsonb_build_object(\$tmp\$${TEMPORADA}\$tmp\$, \$hist\$${hist}\$hist\$::jsonb),
+                            '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
+                     else c end)
+                   from jsonb_array_elements(value) c)
+                 where key = 'gb_comm_v2';"
           fi
 
-          # jsonb_set sobre la comunidad que coincide por nombre; sube _rev para
-          # que la versión de la nube gane sobre cualquier celular desactualizado.
-          if [ "$BORRAR" = "BORRAR" ]; then
-            sql=$(printf "update public.collections set value = (
-                     select jsonb_agg(case when c->>'name' = %s
-                       then (c - 'historico') || jsonb_build_object(
-                              'historico', (coalesce(c->'historico','{}'::jsonb) - %s),
-                              '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
-                       else c end)
-                     from jsonb_array_elements(value) c)
-                   where key = 'gb_comm_v2';" \
-                   "$(jq -Rn --arg v "$COMUNIDAD" '$v|tojson')" \
-                   "$(jq -Rn --arg v "$TEMPORADA" '$v|tojson')")
-          else
-            sql=$(printf "update public.collections set value = (
-                     select jsonb_agg(case when c->>'name' = %s
-                       then c || jsonb_build_object(
-                              'historico', coalesce(c->'historico','{}'::jsonb) || jsonb_build_object(%s, %s::jsonb),
-                              '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
-                       else c end)
-                     from jsonb_array_elements(value) c)
-                   where key = 'gb_comm_v2';" \
-                   "$(jq -Rn --arg v "$COMUNIDAD" '$v|tojson')" \
-                   "$(jq -Rn --arg v "$TEMPORADA" '$v|tojson')" \
-                   "$(jq -Rn --arg v "$nuevo" '$v|tojson')")
-          fi
-          q "$sql" > /dev/null
+          # La respuesta del update se revisa: si la base devuelve un error, el
+          # flujo se detiene en vez de decir que todo salió bien.
+          resp=$(q "$sql")
+          echo "$resp" | jq -e 'if type=="object" and (has("message") or has("error")) then false else true end' > /dev/null \
+            || { echo "ERROR de la base:"; echo "$resp"; exit 1; }
 
           echo ""
           echo "== Comunidades después =="
-          q "select c->>'name' as nombre, c->>'_rev' as rev, jsonb_object_keys(coalesce(c->'historico','{}'::jsonb)) as temporada from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
+          q "select c->>'name' as nombre, c->>'_rev' as rev,
+                    coalesce((select string_agg(k, ', ' order by k) from jsonb_object_keys(coalesce(c->'historico','{}'::jsonb)) k), '(ninguna)') as temporadas_historicas
+             from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
           echo ""
-          echo "== Resumen de lo que quedó cargado =="
-          q "select t.temporada, (h->>'fechas') as fechas, (select count(*) from jsonb_object_keys(h->'jugadores')) as jugadores from public.collections, jsonb_array_elements(value) c, jsonb_object_keys(coalesce(c->'historico','{}'::jsonb)) t(temporada), lateral (select c->'historico'->t.temporada as h) x where key='gb_comm_v2';"
+          echo "== Detalle de lo que quedó cargado =="
+          q "select k as temporada,
+                    (c->'historico'->k->>'fechas') as fechas,
+                    (select count(*) from jsonb_object_keys(c->'historico'->k->'jugadores')) as jugadores,
+                    (select round(sum((v->>'money')::numeric)) from jsonb_each(c->'historico'->k->'jugadores') e(id, v)) as suma_soles
+             from public.collections, jsonb_array_elements(value) c, jsonb_object_keys(coalesce(c->'historico','{}'::jsonb)) k
+             where key='gb_comm_v2';"
           echo ""
           echo "Listo. Las fechas ya guardadas en la app no se tocaron."
