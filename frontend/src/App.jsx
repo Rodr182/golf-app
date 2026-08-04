@@ -465,7 +465,8 @@ function temporadasDe(communityId, rounds, community) {
   return [...set].sort((a, b) => (a < b ? 1 : -1));
 }
 const rondasTemporada = (communityId, rounds, temporada) =>
-  rounds.filter((r) => r.communityId === communityId && !r.results.simple && (!temporada || temporadaDe(r) === temporada));
+  rounds.filter((r) => r.communityId === communityId && !r.results.simple && !r.soloTarjeta
+                    && (!temporada || temporadaDe(r) === temporada));
 
 /* ---- HISTÓRICO ----
    Fechas de la temporada jugadas ANTES de usar la app: no tienen tarjeta ni
@@ -479,6 +480,37 @@ const historicoDe = (community, temporada) => {
   return { fechas: +h.fechas || 0, jugadores: h.jugadores || {}, pozo: h.pozo || [],
            desde: h.desde, hasta: h.hasta, nota: h.nota };
 };
+
+/* ---- TARJETAS DE LAS FECHAS PREVIAS A LA APP ----
+   De esas fechas la planilla sí guarda la tarjeta hoyo por hoyo y el hándicap
+   del día. Se cargan aparte (colección gb_histcards_v1) y se convierten en
+   rondas "solo tarjeta": alimentan estadísticas, hándicap, tarjetas del perfil
+   y el cara a cara, pero NUNCA la plata — esa vive en `community.historico` y
+   ya está cuadrada. Por eso llevan `soloTarjeta` y las vistas de dinero las
+   excluyen explícitamente. */
+function rondasDeTarjetas(histCards, communities, players) {
+  const out = [];
+  (histCards || []).forEach((paq) => {
+    if (!paq || !Array.isArray(paq.tarjetas)) return;
+    const porFecha = {};
+    paq.tarjetas.forEach((t) => (porFecha[t.d] || (porFecha[t.d] = [])).push(t));
+    Object.entries(porFecha).forEach(([date, ts]) => {
+      const jugadores = ts.map((t) => ({
+        id: t.p, name: resolveName(t.p, players), hcp: t.h, gross: t.g,
+      }));
+      out.push({
+        id: `hist-${paq.communityId}-${date}`, communityId: paq.communityId, courseId: paq.courseId,
+        date, eventName: "Fecha anterior a la app", soloTarjeta: true,
+        teams: [{ id: 1, start: 1, players: jugadores, pairs: [] }],
+        results: { simple: false, eventStart: 1, tokenValue: 0, breakdown: [],
+          rows: jugadores.map((p) => ({ id: p.id, name: p.name, totalMoney: 0, contests: [] })) },
+      });
+    });
+  });
+  return out;
+}
+/* Las rondas que sirven para estadísticas: las de la app más las solo-tarjeta */
+const conTarjetas = (rounds, histRounds) => [...(rounds || []), ...(histRounds || [])];
 
 /* Money list de una comunidad en una temporada (incluye el histórico) */
 function communityMoneyList(communityId, rounds, temporada, community) {
@@ -511,7 +543,7 @@ function playerMoneyByCommunity(meId, rounds, communities = []) {
   });
   const temp = (b, t) => b.temporadas[t] || (b.temporadas[t] = { temporada: t, total: 0, rounds: 0, hist: 0, histFechas: 0 });
   // Lo jugado dentro de la app
-  rounds.filter((r) => !r.results.simple).forEach((r) => {
+  rounds.filter((r) => !r.results.simple && !r.soloTarjeta).forEach((r) => {
     const row = r.results.rows.find((x) => x.id === meId);
     if (!row || row.guest) return;
     const b = fila(r.communityId), t = temp(b, temporadaDe(r));
@@ -2333,7 +2365,7 @@ function Communities({ communities, me, onOpen, onCreate }) {
 }
 
 /* ---------------- PERFIL / ESTADÍSTICAS ---------------- */
-function PlayerView({ me, rounds, communities, players, courses: coursesProp, onSaveProfile, onChangePassword }) {
+function PlayerView({ me, rounds, roundsStats, communities, players, courses: coursesProp, onSaveProfile, onChangePassword }) {
   const [openCardIdx, setOpenCardIdx] = useState(null);
   const [holeCourse, setHoleCourse] = useState(null);
   const [editing, setEditing] = useState(false);
@@ -2364,12 +2396,15 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
   const cName = (id) => communities.find((c) => c.id === id)?.name || (id === "libre" ? "Ronda libre" : "Comunidad");
   const cCur = (id) => communities.find((c) => c.id === id)?.currency || "S/.";
   const courses = coursesProp || [];
-  const stats = playerScoreStats(me.id, rounds, courses);
-  const hcpHist = playerHcpHistory(me.id, rounds);
+  // Las estadísticas y las tarjetas sí miran la temporada completa, porque de
+  // las fechas previas a la app sí tenemos la tarjeta hoyo por hoyo.
+  const rStats = roundsStats || rounds;
+  const stats = playerScoreStats(me.id, rStats, courses);
+  const hcpHist = playerHcpHistory(me.id, rStats);
   const maxCat = Math.max(1, ...Object.values(stats.counts));
 
   // Tarjetas completas del jugador (18 hoyos): gross y neto por ronda
-  const myCards = rounds.map((r) => {
+  const myCards = rStats.map((r) => {
     const course = courses.find((c) => c.id === r.courseId);
     let mp = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === me.id) mp = p; }));
     if (!mp || !course) return null;
@@ -2377,7 +2412,7 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
     if (!filled) return null;
     const grossTotal = mp.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
     const hcp = parseInt(mp.hcp) || 0;
-    return { grossTotal, netTotal: grossTotal - hcp, date: r.date, hcp, courseName: course.name };
+    return { grossTotal, netTotal: grossTotal - hcp, date: r.date, hcp, courseName: course.name, previa: !!r.soloTarjeta };
   }).filter(Boolean);
   // Evolución por fecha, de la más antigua a la más reciente
   const trend = [...myCards].reverse();
@@ -2492,8 +2527,9 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
       )}
       {byComm.some((b) => b.histFechas > 0) && (
         <div style={{ fontSize: 12, color: "#7a8780", margin: "-14px 0 20px" }}>
-          De las fechas jugadas antes de usar la app solo tenemos el resultado en soles, no la tarjeta: por eso
-          «Mejor», «Peor» y las estadísticas de abajo miran únicamente las rondas jugadas dentro de la app.
+          De las fechas jugadas antes de usar la app tenemos la tarjeta y el hándicap del día —así que las
+          estadísticas, el hoyo por hoyo y tus tarjetas sí las incluyen—, pero no el detalle de cómo se repartió
+          la plata: por eso «Mejor», «Peor» y el historial de rondas de abajo solo miran lo jugado dentro de la app.
         </div>
       )}
 
@@ -2568,11 +2604,11 @@ function PlayerView({ me, rounds, communities, players, courses: coursesProp, on
 
       {/* RENDIMIENTO HOYO POR HOYO */}
       {(() => {
-        const canchasJugadas = [...new Set(rounds.filter((r) => r.teams.some((t) => t.players.some((p) => p.id === me.id))).map((r) => r.courseId))]
+        const canchasJugadas = [...new Set(rStats.filter((r) => r.teams.some((t) => t.players.some((p) => p.id === me.id))).map((r) => r.courseId))]
           .map((id) => courses.find((c) => c.id === id)).filter(Boolean);
         if (!canchasJugadas.length) return null;
         const elegida = holeCourse || canchasJugadas[0].id;
-        const hs = playerHoleStats(me.id, rounds, elegida, courses);
+        const hs = playerHoleStats(me.id, rStats, elegida, courses);
         if (!hs) return null;
         const peor = Math.max(...hs.hoyos.map((h) => (h.vsPar == null ? -99 : h.vsPar)));
         return (
@@ -3727,7 +3763,7 @@ function MatchHoyoAHoyo({ m, nA, nB }) {
   );
 }
 
-function CommunityDetail({ community, rounds, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onDeleteRound, onBack, onStartRound, initialEventId }) {
+function CommunityDetail({ community, rounds, roundsStats, players, communities, me, events, setEvents, courses, onUpdateCommunity, onSaveRound, onDeleteRound, onBack, onStartRound, initialEventId }) {
   const [tab, setTab] = useState(initialEventId ? "eventos" : "jugadores");
   const [openRound, setOpenRound] = useState(null);
   const [managingEventId, setManagingEventId] = useState(initialEventId || null);
@@ -3740,7 +3776,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
   const cur = community.currency;
   const temporadas = temporadasDe(community.id, rounds, community);
   const [temporada, setTemporada] = useState(temporadas[0] || temporadaActual());
-  const commRounds = rounds.filter((r) => r.communityId === community.id && temporadaDe(r) === temporada);
+  const commRounds = rounds.filter((r) => r.communityId === community.id && !r.soloTarjeta && temporadaDe(r) === temporada);
   const list = communityMoneyList(community.id, rounds, temporada, community);
   const ranking = communityRanking(community, rounds, temporada);
   const pozo = communityPozo(community, rounds, temporada);
@@ -4040,7 +4076,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
         const opciones = miembrosAlfabetico(community, players).map((id) => ({ id, name: resolveName(id, players) }));
         const sel = (k) => (e) => setH2h({ ...h2h, [k]: e.target.value });
         const listo = h2h.a && h2h.b && h2h.a !== h2h.b;
-        const r = listo ? headToHead(h2h.a, h2h.b, rounds, community.id, courses, { rulePct: community.rulePct, regla8: community.regla8, regla8Holes: [], multiStroke: community.multiStroke }) : null;
+        const r = listo ? headToHead(h2h.a, h2h.b, roundsStats || rounds, community.id, courses, { rulePct: community.rulePct, regla8: community.regla8, regla8Holes: [], multiStroke: community.multiStroke }) : null;
         const nA = resolveName(h2h.a, players), nB = resolveName(h2h.b, players);
         return (
           <div>
@@ -4502,6 +4538,7 @@ export default function App() {
   // seguir subiendo para que la marca llegue a los demás); la app trabaja con
   // la versión sin lo borrado.
   const [coursesAll, setCourses] = useState([]);
+  const [histCards, setHistCards] = useState([]);   // tarjetas previas a la app (solo lectura)
   const [roundsAll, setRounds] = useState([]);
   const [me, setMe] = useState(null);
   const [view, setView] = useState("home");
@@ -4532,6 +4569,10 @@ export default function App() {
     const crs = await store.get("gb_courses_v2", SEED_COURSES);
     const rnd = await store.get("gb_rounds_v2", []);
     const evs = await store.get("gb_events_v1", []);
+    // Tarjetas de las fechas previas a la app: se leen una sola vez al entrar y
+    // este dispositivo nunca las escribe, así que quedan fuera del sondeo de
+    // cada 15 s (son ~15 KB que no cambian nunca).
+    const hcards = await store.get("gb_histcards_v1", []);
     // Foto de lo cargado: mientras no cambie, este dispositivo no lo reescribe.
     savedSnap.current = {
       gb_players_v2: JSON.stringify(base), gb_comm_v2: JSON.stringify(comm),
@@ -4539,8 +4580,16 @@ export default function App() {
       gb_events_v1: JSON.stringify(evs),
     };
     setPlayers(base); setCommunities(comm); setCourses(crs); setRounds(rnd); setEvents(evs);
+    setHistCards(Array.isArray(hcards) ? hcards : []);
     return base;
   };
+
+  // Rondas con tarjeta para estadísticas: las de la app más las fechas previas.
+  // Las vistas de dinero filtran `soloTarjeta`, así que pasarlas es seguro.
+  const roundsStats = useMemo(
+    () => conTarjetas(rounds, rondasDeTarjetas(histCards, communities, players)),
+    [rounds, histCards, players],
+  );
 
   // arranque
   useEffect(() => {
@@ -4830,7 +4879,7 @@ export default function App() {
 
         {view === "subscription" && <SubscriptionView me={me} onSetPlan={setPlan} myOwnedCommunities={myOwnedCommunities} onToggleCommunityPro={toggleCommunityPro} />}
 
-        {view === "player" && <PlayerView me={me} rounds={rounds} communities={communities} players={players} courses={courses} onSaveProfile={saveProfile} onChangePassword={changePassword} />}
+        {view === "player" && <PlayerView me={me} rounds={rounds} roundsStats={roundsStats} communities={communities} players={players} courses={courses} onSaveProfile={saveProfile} onChangePassword={changePassword} />}
 
         {view === "courses" && <CoursesView courses={courses} setCourses={setCourses} rounds={rounds} canManage={isAppAdmin(me)} />}
 
@@ -4842,6 +4891,7 @@ export default function App() {
           <CommunityDetail
             community={communities.find((c) => c.id === openCommunity.id) || openCommunity}
             rounds={rounds}
+            roundsStats={roundsStats}
             players={players}
             communities={communities}
             me={me}

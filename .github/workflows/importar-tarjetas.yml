@@ -1,0 +1,104 @@
+# Carga las TARJETAS de las fechas jugadas antes de usar la app.
+#
+# Qué hace: escribe la colección `gb_histcards_v1` con los golpes hoyo por hoyo
+# y el hándicap del día de cada jugador. Solo alimenta las ESTADÍSTICAS —
+# scoring, hoyo por hoyo, evolución del hándicap, tarjetas del perfil y el cara
+# a cara—; la plata sigue viviendo en `historico` dentro de la comunidad y esta
+# acción no la toca.
+#
+# Los datos salen de scripts/tarjetas-<temporada>.json, con los ids internos de
+# cada jugador (nunca nombres, porque el repositorio es público).
+#
+# Para deshacerlo: correr con "borrar".
+name: Cargar tarjetas anteriores a la app
+
+on:
+  workflow_dispatch:
+    inputs:
+      temporada:
+        description: "Temporada (año). Debe existir scripts/tarjetas-<año>.json"
+        required: true
+        default: "2026"
+      comunidad_id:
+        description: "Id de la comunidad a la que pertenecen esas fechas"
+        required: true
+        default: "c1785121552199"
+      borrar:
+        description: "Escribe BORRAR para quitar las tarjetas de esa temporada"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  importar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cargar las tarjetas
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          TEMPORADA: ${{ inputs.temporada }}
+          COMUNIDAD_ID: ${{ inputs.comunidad_id }}
+          BORRAR: ${{ inputs.borrar }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          archivo="scripts/tarjetas-${TEMPORADA}.json"
+          [ "$BORRAR" = "BORRAR" ] || [ -f "$archivo" ] || { echo "ERROR: no existe $archivo"; exit 1; }
+
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
+
+          echo "== Tarjetas cargadas antes =="
+          q "select coalesce(jsonb_array_length(value), 0) as paquetes from public.collections where key='gb_histcards_v1';"
+          echo ""
+
+          if [ "$BORRAR" = "BORRAR" ]; then
+            echo "== Quitando las tarjetas de la temporada $TEMPORADA =="
+            sql="update public.collections
+                 set value = coalesce((select jsonb_agg(p) from jsonb_array_elements(value) p
+                                       where p->>'temporada' <> \$tmp\$${TEMPORADA}\$tmp\$
+                                          or p->>'communityId' <> \$cid\$${COMUNIDAD_ID}\$cid\$), '[]'::jsonb)
+                 where key='gb_histcards_v1';"
+          else
+            # Se valida el archivo antes de subirlo: 18 hoyos por tarjeta, golpes
+            # entre 1 y 15, y ninguna fecha repetida para el mismo jugador.
+            jq -e '
+              (.tarjetas | length) > 0
+              and ([.tarjetas[] | select((.g | length) != 18)] | length) == 0
+              and ([.tarjetas[] | .g[] | select(. < 1 or . > 15)] | length) == 0
+              and ([.tarjetas[] | "\(.p)|\(.d)"] | length) == ([.tarjetas[] | "\(.p)|\(.d)"] | unique | length)
+            ' "$archivo" > /dev/null || { echo "ERROR: el archivo de tarjetas no pasó la validación"; exit 1; }
+
+            paquete=$(jq -c --arg cid "$COMUNIDAD_ID" '{temporada, communityId: $cid, courseId, fechas, nota, tarjetas}' "$archivo")
+            case "$paquete" in *'$paq$'*) echo "ERROR: el JSON contiene el delimitador"; exit 1;; esac
+            echo "== Cargando tarjetas de la temporada $TEMPORADA en la comunidad $COMUNIDAD_ID =="
+            jq -r '"   \(.tarjetas | length) tarjetas · \(.fechas | length) fechas · \([.tarjetas[].p] | unique | length) jugadores · cancha \(.courseId)"' "$archivo"
+
+            # Se reemplaza el paquete de esa temporada+comunidad y se conservan los demás.
+            sql="insert into public.collections (key, value)
+                 values ('gb_histcards_v1', jsonb_build_array(\$paq\$${paquete}\$paq\$::jsonb))
+                 on conflict (key) do update set value =
+                   coalesce((select jsonb_agg(p) from jsonb_array_elements(public.collections.value) p
+                             where p->>'temporada' <> \$tmp\$${TEMPORADA}\$tmp\$
+                                or p->>'communityId' <> \$cid\$${COMUNIDAD_ID}\$cid\$), '[]'::jsonb)
+                   || jsonb_build_array(\$paq\$${paquete}\$paq\$::jsonb);"
+          fi
+
+          resp=$(q "$sql")
+          echo "$resp" | jq -e 'if type=="object" and (has("message") or has("error")) then false else true end' > /dev/null \
+            || { echo "ERROR de la base:"; echo "$resp"; exit 1; }
+
+          echo ""
+          echo "== Lo que quedó cargado =="
+          q "select p->>'temporada' as temporada, p->>'communityId' as comunidad, p->>'courseId' as cancha,
+                    (select count(*) from jsonb_array_elements(p->'fechas')) as fechas,
+                    (select count(*) from jsonb_array_elements(p->'tarjetas')) as tarjetas,
+                    pg_column_size(value) as bytes
+             from public.collections, jsonb_array_elements(value) p where key='gb_histcards_v1';"
+          echo ""
+          echo "Listo. La plata y las fechas ya guardadas en la app no se tocaron."

@@ -242,9 +242,27 @@ List las columnas «Mejor» y «Peor» solo miran lo jugado dentro de la app.
 
 En el **perfil del jugador** pasa lo mismo: el balance total, las rondas jugadas
 y la money list por comunidad suman esas fechas, con el desglose por temporada y
-una nota de cuánto viene de antes. Las tarjetas, el hoyo por hoyo y las
-estadísticas de scoring siguen mirando solo lo jugado dentro de la app, porque de
-las fechas previas no hay tarjeta.
+una nota de cuánto viene de antes.
+
+### Las tarjetas de esas fechas
+
+Si además se cargan las **tarjetas** (hoja `Registro Medal` de la planilla: los
+golpes hoyo por hoyo y el hándicap del día), la temporada entra completa en las
+**estadísticas**: scoring (birdies, pares, bogeys…), rendimiento hoyo por hoyo,
+movimiento del hándicap, gross y neto ronda por ronda, y el **cara a cara** hoyo
+a hoyo en todas esas fechas.
+
+Se cargan con la acción `Cargar tarjetas anteriores a la app`, que lee
+`scripts/tarjetas-<año>.json` y escribe la colección `gb_histcards_v1` — aparte
+de la comunidad a propósito: son ~15 KB que no cambian nunca, así que se leen
+**una sola vez al entrar** y no viajan en el sondeo de cada 15 segundos. La misma
+acción con `BORRAR` las quita.
+
+Esas fechas entran como rondas **solo tarjeta**: alimentan estadísticas pero
+**nunca la plata**. La money list, el ranking, el pozo y el balance del perfil
+las excluyen explícitamente, porque el dinero ya vive en `historico` y está
+cuadrado contra la planilla. Tampoco aparecen en **Resultados**, porque de ellas
+no tenemos los grupos, las parejas ni el desglose de cómo se ganó.
 
 Se carga con la acción `Cargar temporada anterior a la app` (pestaña Actions),
 que lee `scripts/historico-<año>.json`. Ese archivo lleva **solo los ids internos
