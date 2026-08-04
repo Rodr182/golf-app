@@ -25,6 +25,18 @@ on:
         description: "Escribe BORRAR para quitar el histórico de esa temporada en vez de cargarlo"
         required: false
         default: ""
+      jugador_id:
+        description: "Sumar UN jugador que se registró después (su id de la app). Deja vacío para la carga normal."
+        required: false
+        default: ""
+      jugador_soles:
+        description: "Soles acumulados de ese jugador en las fechas previas (ej. -81)"
+        required: false
+        default: ""
+      jugador_fechas:
+        description: "En cuántas de esas fechas jugó (ej. 3)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -41,11 +53,18 @@ jobs:
           TEMPORADA: ${{ inputs.temporada }}
           COMUNIDAD: ${{ inputs.comunidad }}
           BORRAR: ${{ inputs.borrar }}
+          JUG_ID: ${{ inputs.jugador_id }}
+          JUG_SOLES: ${{ inputs.jugador_soles }}
+          JUG_FECHAS: ${{ inputs.jugador_fechas }}
         run: |
           set -euo pipefail
           [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
           archivo="scripts/historico-${TEMPORADA}.json"
-          if [ "$BORRAR" != "BORRAR" ] && [ ! -f "$archivo" ]; then
+          if [ -n "$JUG_ID" ]; then
+            case "$JUG_ID" in *[!0-9a-fA-F-]*) echo "ERROR: el id no parece un id de la app"; exit 1;; esac
+            case "$JUG_SOLES" in ""|*[!0-9.+-]*) echo "ERROR: 'jugador_soles' debe ser un numero"; exit 1;; esac
+            case "$JUG_FECHAS" in ""|*[!0-9]*) echo "ERROR: 'jugador_fechas' debe ser un entero"; exit 1;; esac
+          elif [ "$BORRAR" != "BORRAR" ] && [ ! -f "$archivo" ]; then
             echo "ERROR: no existe $archivo"; exit 1
           fi
 
@@ -59,7 +78,24 @@ jobs:
 
           # El JSON se mete en el SQL con "dollar quoting" ($hist$…$hist$): así
           # no hay que escapar comillas y no se puede colar nada raro.
-          if [ "$BORRAR" = "BORRAR" ]; then
+          if [ -n "$JUG_ID" ]; then
+            # Suma o corrige UN jugador dentro de una temporada ya cargada, para
+            # cuando alguien crea su cuenta después de la carga inicial.
+            echo "== Sumando a la temporada $TEMPORADA el jugador $JUG_ID: S/$JUG_SOLES en $JUG_FECHAS fechas =="
+            sql="update public.collections set value = (
+                   select jsonb_agg(case when c->>'name' = \$nom\$${COMUNIDAD}\$nom\$
+                     then c || jsonb_build_object(
+                            'historico', jsonb_set(coalesce(c->'historico','{}'::jsonb),
+                              array[\$tmp\$${TEMPORADA}\$tmp\$, 'jugadores', \$jid\$${JUG_ID}\$jid\$],
+                              jsonb_build_object('money', ${JUG_SOLES}::numeric, 'fechas', ${JUG_FECHAS}::int), true),
+                            '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
+                     else c end)
+                   from jsonb_array_elements(value) c)
+                 where key = 'gb_comm_v2'
+                   and exists (select 1 from jsonb_array_elements(value) c2
+                               where c2->>'name' = \$nom\$${COMUNIDAD}\$nom\$
+                                 and c2->'historico' ? \$tmp\$${TEMPORADA}\$tmp\$);"
+          elif [ "$BORRAR" = "BORRAR" ]; then
             echo "== Quitando el histórico de $TEMPORADA en «$COMUNIDAD» =="
             sql="update public.collections set value = (
                    select jsonb_agg(case when c->>'name' = \$nom\$${COMUNIDAD}\$nom\$

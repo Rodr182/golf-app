@@ -246,6 +246,11 @@ de cada jugador, nunca nombres**, porque el repositorio es público. La misma
 acción con `BORRAR` deshace la carga. Escribe únicamente el bloque
 `historico.<año>` de la comunidad: las fechas ya guardadas no se tocan.
 
+Los **invitados no entran**: no acumulan money list ni ranking, así que su plata
+de esas fechas queda fuera de la carga y la money list de la temporada no suma
+cero. Si alguien crea su cuenta después de la carga inicial, la misma acción
+suma **un solo jugador** con `jugador_id`, `jugador_soles` y `jugador_fechas`.
+
 Al cargar hay que **excluir las fechas que ya estén dentro de la app**, o se
 contarían dos veces. La carga de 2026 trae las 10 fechas del 11/04 al 23/07; la
 del 01/08 quedó fuera porque esa ya se jugó y consolidó en la app.
@@ -259,9 +264,11 @@ Dentro de cada comunidad, además de la Money List:
   defecto 50% y 50%, editable por los administradores en **⚙️ Reglas**. Solo
   entran los miembros (no los invitados) y solo las fechas de **2 grupos o
   más** — una fecha de un grupo suma a la Money List pero no al ranking.
-  Entran **todos los miembros, también los que aún no jugaron** (con 0 y 0),
-  igual que la hoja `Normalizacion`: dejarlos fuera movía el mínimo de
-  participación y cambiaba el orden de la tabla.
+  En la **tabla** solo aparecen los miembros con **al menos una fecha**: quien
+  todavía no juega no figura hasta su primer registro. Su 0 **sí cuenta para
+  normalizar**, igual que la hoja `Normalizacion`, que corre el cálculo sobre el
+  padrón completo — sacarlos también de la cuenta subía el mínimo de
+  participación y movía 6 de las 28 posiciones.
   La tabla se puede ordenar por ranking, por money list o por participación.
 - **Pozo** (solo administradores): por fecha, toma lo que ganaron los
   ganadores de ese día y aplica los conceptos configurados —Mesa 35%, Prop 5%

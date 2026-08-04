@@ -546,9 +546,12 @@ function communityRanking(community, rounds, temporada) {
   const members = new Set(community.members || []);
   const agg = {};
   const fila = (id, name) => agg[id] || (agg[id] = { id, name, ml: 0, fechas: 0, hist: 0, histFechas: 0 });
-  // Entran TODOS los miembros, también los que aún no jugaron: la planilla
-  // normaliza sobre el padrón completo, así que dejar fuera a los de 0 fechas
-  // movía el mínimo de participación y cambiaba el orden del ranking.
+  // En la TABLA solo salen los miembros con al menos una fecha: quien todavía
+  // no juega no aparece hasta tener su primer registro. Pero para NORMALIZAR sí
+  // se cuenta su 0, igual que la hoja Normalizacion, que corre el cálculo sobre
+  // el padrón completo. Sacarlos también de la cuenta subiría el mínimo de
+  // participación y movería el orden de toda la tabla.
+  // Los invitados no acumulan nunca, ni aquí ni en la money list.
   members.forEach((id) => fila(id, null));
   Object.entries(hist.jugadores).forEach(([id, v]) => {
     if (!members.has(id)) return;
@@ -564,12 +567,13 @@ function communityRanking(community, rounds, temporada) {
       a.ml += row.totalMoney; a.fechas++;
     });
   });
-  const list = Object.values(agg);
-  const sinFechas = list.filter((p) => p.fechas === 0).length;
+  const todos = Object.values(agg);                 // el padrón: normaliza sobre esto
+  const list = todos.filter((p) => p.fechas > 0);   // la tabla: solo quienes ya jugaron
+  const sinFechas = todos.length - list.length;
   if (!list.length) return { rows: [], fechas, sinFechas, weights: rankWeights(community), hist };
 
-  list.forEach((p) => (p.pctPart = fechas ? p.fechas / fechas : 0));
-  const mls = list.map((p) => p.ml), parts = list.map((p) => p.pctPart);
+  todos.forEach((p) => (p.pctPart = fechas ? p.fechas / fechas : 0));
+  const mls = todos.map((p) => p.ml), parts = todos.map((p) => p.pctPart);
   const minMl = Math.min(...mls), maxMl = Math.max(...mls);
   const minPt = Math.min(...parts), maxPt = Math.max(...parts);
   const w = rankWeights(community);
