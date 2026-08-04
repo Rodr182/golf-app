@@ -240,15 +240,16 @@ Dentro de cada comunidad, además de la Money List:
   y Caja 10% por defecto, con nombres y porcentajes editables— más el
   acumulado de la temporada.
 
-- **Cara a cara**: compara a dos miembros en las fechas que jugaron juntos, **por
-  score, no por plata**. Cada fecha la gana el **neto más bajo** —el del Medal si
-  esa fecha lo jugó, y si no, gross menos el hándicap con que jugó—, porque es lo
-  que pone a dos hándicaps distintos en la misma vara. Se ven las fechas ganadas,
+- **Cara a cara**: compara a dos miembros en las fechas que jugaron juntos, **con
+  hándicap y por score, nunca por plata ni por gross**. El neto es el de ese día:
+  los golpes menos los strokes que recibió cada uno con el % de la comunidad, con
+  la base del evento — el mismo neto con el que se jugó el Individual general, así
+  que el total de la fecha es exactamente la suma de los 18 hoyos. Cada fecha
+  muestra el hándicap y los strokes de cada jugador. Se ven las fechas ganadas,
   los **hoyos ganados**, el promedio de neto y de gross y el mejor neto.
   Cada fecha se abre en un **match hoyo a hoyo** entre los dos: el neto y el
-  gross de cada hoyo, quién lo ganó, y el marcador acumulado (AS = empate). Es el
-  extracto del Individual general mirando solo a esos dos, con los mismos netos
-  que se jugaron ese día.
+  gross de cada hoyo, un punto dorado en los hoyos donde recibe stroke, quién ganó
+  el hoyo y el marcador acumulado (AS = empate).
 
 Ambos cálculos replican las hojas `Normalizacion` y `POZO` de la planilla que
 el grupo llevaba en Excel.

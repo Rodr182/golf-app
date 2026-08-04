@@ -681,17 +681,21 @@ function headToHead(aId, bId, rounds, communityId, courses = [], reglasComunidad
         dato[p.id].gross = p.gross.reduce((s, g) => s + (parseInt(g) || 0), 0);
         dato[p.id].hcp = parseInt(p.hcp) || 0;
       }));
-      const neto = (id, row) => {
-        const medal = (row.contests || []).find((c) => c.medal);
-        if (medal && medal.meta && medal.meta.netTotal != null) return medal.meta.netTotal;
+      const curso = courses.find((c) => c.id === r.courseId);
+      const match = matchHoyoAHoyo(aId, bId, r, curso, reglasComunidad);
+      // El neto de la fecha es el MISMO con el que se jugó cada hoyo: gross
+      // menos los strokes que recibió ese día. Así el total y la tira hoyo a
+      // hoyo hablan del mismo número. Sin la cancha se cae al neto simple.
+      const netoTotal = (id, lado) => {
+        if (match) return match.hoyos.reduce((s, h) => s + (lado === "a" ? h.aNet : h.bNet), 0);
         const d = dato[id];
         return d.gross == null ? null : d.gross - d.hcp;
       };
-      const curso = courses.find((c) => c.id === r.courseId);
       return { date: r.date, name: r.eventName || "Fecha", courseName: curso?.name || "",
         aGross: dato[aId].gross ?? null, bGross: dato[bId].gross ?? null,
-        aNet: neto(aId, ra), bNet: neto(bId, rb),
-        match: matchHoyoAHoyo(aId, bId, r, curso, reglasComunidad) };
+        aHcp: dato[aId].hcp ?? null, bHcp: dato[bId].hcp ?? null,
+        aStrokes: match ? match.aStrokes : null, bStrokes: match ? match.bStrokes : null,
+        aNet: netoTotal(aId, "a"), bNet: netoTotal(bId, "b"), match };
     }).filter(Boolean);
   const res = { fechas: filas.length, aGanó: 0, bGanó: 0, empates: 0, filas,
     aGrossProm: null, bGrossProm: null, aNetProm: null, bNetProm: null, aMejor: null, bMejor: null,
@@ -725,13 +729,16 @@ function matchHoyoAHoyo(aId, bId, round, course, reglasComunidad) {
   const pa = todos.find((p) => p.id === aId), pb = todos.find((p) => p.id === bId);
   if (!pa || !pb) return null;
   const base = Math.min(...todos.map((p) => adjustedHcp(parseInt(p.hcp) || 0, pct)));
-  const netDe = (p) => netScores(p.gross.map((g) => parseInt(g) || 0), adjustedHcp(parseInt(p.hcp) || 0, pct) - base, course.strokes, multi, r8);
+  const phDe = (p) => adjustedHcp(parseInt(p.hcp) || 0, pct) - base;
+  const netDe = (p) => netScores(p.gross.map((g) => parseInt(g) || 0), phDe(p), course.strokes, multi, r8);
   const na = netDe(pa), nb = netDe(pb);
+  const strDe = (p) => course.strokes.map((si1) => strokesOnHole(effPh(phDe(p), multi), si1));
+  const sa = strDe(pa), sb = strDe(pb);
   const start = round.results.eventStart || 1;
   const hoyos = playOrder(start).map((h) => ({
     hoyo: h + 1, par: (course.pars || [])[h] ?? null, si: course.strokes[h],
     aGross: parseInt(pa.gross[h]) || null, bGross: parseInt(pb.gross[h]) || null,
-    aNet: na[h], bNet: nb[h],
+    aNet: na[h], bNet: nb[h], aStr: sa[h], bStr: sb[h],
     gana: na[h] < nb[h] ? "a" : nb[h] < na[h] ? "b" : null,
   }));
   const aHoyos = hoyos.filter((x) => x.gana === "a").length;
@@ -3551,9 +3558,13 @@ function MatchHoyoAHoyo({ m, nA, nB }) {
   const estados = m.hoyos.map((h) => { acum += h.gana === "a" ? 1 : h.gana === "b" ? -1 : 0; return acum; });
   const celda = (h, lado) => {
     const gana = h.gana === lado;
+    const str = lado === "a" ? h.aStr : h.bStr;
     return (
       <td key={h.hoyo} style={{ padding: "3px 2px", textAlign: "center", background: gana ? "rgba(45,106,79,.14)" : "transparent", fontWeight: gana ? 800 : 500, color: gana ? C.green : C.ink }}>
-        {lado === "a" ? h.aNet : h.bNet}
+        <span style={{ position: "relative" }}>
+          {lado === "a" ? h.aNet : h.bNet}
+          {str > 0 && <span title={`Recibe ${str} stroke${str > 1 ? "s" : ""} en este hoyo`} style={{ color: C.gold, fontSize: 9, verticalAlign: "super", fontWeight: 800 }}>{"•".repeat(Math.min(str, 2))}</span>}
+        </span>
         <div style={{ fontSize: 9.5, color: "#9aa69e", fontWeight: 500 }}>{lado === "a" ? h.aGross : h.bGross}</div>
       </td>
     );
@@ -3561,8 +3572,8 @@ function MatchHoyoAHoyo({ m, nA, nB }) {
   return (
     <div style={{ padding: "0 14px 14px" }}>
       <div style={{ fontSize: 12, color: "#7a8780", marginBottom: 6 }}>
-        Neto de cada hoyo (gross en gris) · salida por el hoyo {m.start} ·
-        strokes del día: {corto(nA)} {m.aStrokes} · {corto(nB)} {m.bStrokes}
+        <b>Neto</b> de cada hoyo, con el gross en gris debajo · salida por el hoyo {m.start} ·
+        el punto <span style={{ color: C.gold, fontWeight: 800 }}>•</span> marca el hoyo donde recibe stroke
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 560 }}>
@@ -3575,12 +3586,12 @@ function MatchHoyoAHoyo({ m, nA, nB }) {
           </thead>
           <tbody>
             <tr style={{ borderTop: `1px solid ${C.line}` }}>
-              <td style={{ padding: "3px 8px 3px 0", fontWeight: 700, whiteSpace: "nowrap" }}>{corto(nA)}</td>
+              <td style={{ padding: "3px 8px 3px 0", fontWeight: 700, whiteSpace: "nowrap" }}>{corto(nA)}<div style={{ fontSize: 10, color: "#9aa69e", fontWeight: 500 }}>{m.aStrokes} strokes</div></td>
               {m.hoyos.map((h) => celda(h, "a"))}
               <td style={{ padding: "3px 8px", fontWeight: 800, color: C.green, textAlign: "center" }}>{m.aHoyos}</td>
             </tr>
             <tr style={{ borderTop: `1px solid ${C.line}` }}>
-              <td style={{ padding: "3px 8px 3px 0", fontWeight: 700, whiteSpace: "nowrap" }}>{corto(nB)}</td>
+              <td style={{ padding: "3px 8px 3px 0", fontWeight: 700, whiteSpace: "nowrap" }}>{corto(nB)}<div style={{ fontSize: 10, color: "#9aa69e", fontWeight: 500 }}>{m.bStrokes} strokes</div></td>
               {m.hoyos.map((h) => celda(h, "b"))}
               <td style={{ padding: "3px 8px", fontWeight: 800, color: C.green, textAlign: "center" }}>{m.bHoyos}</td>
             </tr>
@@ -3925,13 +3936,17 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                     </div>
                   </div>
                   <div style={{ fontSize: 12.5, color: "#7a8780", textAlign: "center", marginTop: 10 }}>
-                    El número grande son las <b>fechas</b> que ganó cada uno (neto más bajo del día).
-                    Los <b>hoyos ganados</b> son el match entre los dos, hoyo por hoyo, con los mismos netos del Individual general.
+                    Todo va <b>con hándicap</b>: se compara el <b>neto</b> —los golpes menos los strokes que recibió cada uno ese día,
+                    con el {community.rulePct}% de la comunidad—, nunca el gross.
+                    El número grande son las <b>fechas</b> ganadas (neto más bajo del día) y los <b>hoyos ganados</b> son el match
+                    entre los dos hoyo por hoyo, con esos mismos netos.
                   </div>
                 </Card>
                 <Card style={{ overflow: "hidden" }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
-                    <div>Fecha</div><div style={{ textAlign: "right" }}>{nA.split(" ")[0]}</div><div style={{ textAlign: "right" }}>{nB.split(" ")[0]}</div>
+                    <div>Fecha</div>
+                    <div style={{ textAlign: "right" }}>{nA.split(" ")[0]}<div style={{ fontWeight: 500, fontSize: 11, opacity: .75 }}>neto · hcp · gross</div></div>
+                    <div style={{ textAlign: "right" }}>{nB.split(" ")[0]}<div style={{ fontWeight: 500, fontSize: 11, opacity: .75 }}>neto · hcp · gross</div></div>
                   </div>
                   {r.filas.map((f, i) => {
                     const abierta = h2hAbierta === i;
@@ -3948,12 +3963,14 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                             </button>
                           )}
                         </div>
-                        {[["a", f.aNet, f.aGross, f.bNet], ["b", f.bNet, f.bGross, f.aNet]].map(([lado, net, gross, otro]) => {
+                        {[["a", f.aNet, f.aGross, f.bNet, f.aHcp, f.aStrokes], ["b", f.bNet, f.bGross, f.aNet, f.bHcp, f.bStrokes]].map(([lado, net, gross, otro, hcp, st]) => {
                           const gana = net != null && otro != null && net < otro;
                           return (
                             <div key={lado} style={{ textAlign: "right", fontWeight: gana ? 800 : 500, color: gana ? C.green : C.ink }}>
-                              {net ?? "—"} neto{gana && " ✓"}
-                              <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>{gross ?? "—"} gross</div>
+                              {net ?? "—"}{gana && " ✓"}
+                              <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>
+                                hcp {hcp ?? "—"}{st != null && ` · ${st} str`} · {gross ?? "—"} gross
+                              </div>
                             </div>
                           );
                         })}
