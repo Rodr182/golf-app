@@ -38,6 +38,15 @@ jobs:
           echo "== Jugadores registrados (y si tienen hándicap) =="
           q "select p->>'name' as nombre, p->>'email' as email, p->>'hcp' as hcp from public.collections, jsonb_array_elements(value) p where key='gb_players_v2';"
 
+          echo "== Jugadores con nombre y apellido (para cruzar con la planilla) =="
+          q "select p->>'id' as id, trim(coalesce(p->>'name','') || ' ' || coalesce(p->>'last','')) as nombre_completo, p->>'email' as email from public.collections, jsonb_array_elements(value) p where key='gb_players_v2' order by 2;"
+
+          echo "== Plata por jugador en las fechas ya cerradas en la app =="
+          q "select r->>'date' as fecha, row->>'id' as jugador_id, row->>'totalMoney' as soles, row->>'guest' as invitado from public.collections, jsonb_array_elements(value) r, jsonb_array_elements(r->'results'->'rows') row where key='gb_rounds_v2' order by 1,3;"
+
+          echo "== Miembros de la comunidad =="
+          q "select c->>'id' as comunidad_id, c->>'name' as nombre, c->'members' as miembros from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
+
           echo "== Cuántos NO tienen hándicap (jugarían a 0) =="
           q "select count(*) filter (where p->>'hcp' is null or p->>'hcp'='') as sin_handicap, count(*) as total from public.collections, jsonb_array_elements(value) p where key='gb_players_v2';"
 
