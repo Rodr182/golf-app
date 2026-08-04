@@ -1,0 +1,163 @@
+{
+ "temporada": "2026",
+ "fechas": 10,
+ "desde": "2026-04-11",
+ "hasta": "2026-07-23",
+ "nota": "Fechas de la temporada 2026 jugadas antes de usar la app (planilla Programa_KFB_2026.xlsx). La fecha 2026-08-01 NO est\u00e1 aqu\u00ed: ya se jug\u00f3 dentro de la app.",
+ "jugadores": {
+  "907e9db0-e269-454a-8723-6d02155b5c51": {
+   "money": 565.0,
+   "fechas": 7
+  },
+  "273bef7e-5da6-4740-ab0d-1221c981d76c": {
+   "money": -200.0,
+   "fechas": 6
+  },
+  "b821b0e7-fa9a-4f80-85c8-ff53425942d7": {
+   "money": 290.0,
+   "fechas": 3
+  },
+  "b8d855b4-0490-49b8-b775-494c5e6736af": {
+   "money": 55.0,
+   "fechas": 4
+  },
+  "e3ab00b1-b85d-4f57-99a1-e9af505c75af": {
+   "money": 80.0,
+   "fechas": 6
+  },
+  "118525d6-ea3d-4038-9fe7-7a7e2a2aa1dd": {
+   "money": -351.0,
+   "fechas": 4
+  },
+  "f657ebe7-f6dd-4fce-95da-0c14564a60a4": {
+   "money": -490.0,
+   "fechas": 6
+  },
+  "b38f01d0-d7be-4272-981e-e0c66b339d6c": {
+   "money": -235.0,
+   "fechas": 9
+  },
+  "e8f3d137-96a5-47be-b0f1-39935765161c": {
+   "money": -160.0,
+   "fechas": 8
+  },
+  "8704ea04-215e-4ea0-ab8f-e48219aaa1a7": {
+   "money": -191.0,
+   "fechas": 9
+  },
+  "c805d144-fb5a-49a2-92e2-c9911cf00760": {
+   "money": 167.0,
+   "fechas": 8
+  },
+  "2ce60608-b160-4688-bd16-f80e8a7cc023": {
+   "money": 75.0,
+   "fechas": 9
+  },
+  "2e01212d-e94d-412e-8ce1-9d230c3e828f": {
+   "money": 260.0,
+   "fechas": 4
+  },
+  "b8b4b065-6a43-4f5b-8c94-7999bebe403a": {
+   "money": 127.0,
+   "fechas": 5
+  },
+  "9c165ee3-cf99-4a8f-b4fc-449858b60d2a": {
+   "money": -101.0,
+   "fechas": 2
+  },
+  "ecdc730b-df28-4032-9b05-ba97b6bfce52": {
+   "money": -50.0,
+   "fechas": 2
+  },
+  "cfdf4ce8-dc86-4bdf-83ba-f4f8d57c7cf8": {
+   "money": 415.0,
+   "fechas": 4
+  },
+  "c5d1bebf-edc4-45fb-ab91-7c40d83f9ec9": {
+   "money": -576.0,
+   "fechas": 8
+  },
+  "d33eb523-c37e-499d-a094-a9c97abfa440": {
+   "money": 160.0,
+   "fechas": 2
+  },
+  "99fe7608-67c4-4675-bd3d-67f49e15325e": {
+   "money": 52.0,
+   "fechas": 4
+  },
+  "5dc3ce2e-31d0-47e4-9664-50ee7b938bce": {
+   "money": -58.0,
+   "fechas": 7
+  },
+  "e82c3be7-894f-42ba-8dd8-8d9d931ec748": {
+   "money": -286.0,
+   "fechas": 3
+  },
+  "9dacb1c5-d497-4ce0-b2b6-62006b749fce": {
+   "money": 325.0,
+   "fechas": 4
+  },
+  "55e10a06-ec73-4eac-a868-bd7707e8f2aa": {
+   "money": 410.0,
+   "fechas": 2
+  },
+  "2cb5f9c0-3709-446f-b202-f91c96ba3767": {
+   "money": -210.0,
+   "fechas": 2
+  },
+  "b450138b-81b0-4132-aee8-bda51a7b8ef5": {
+   "money": 248.0,
+   "fechas": 4
+  },
+  "ab9c5b7f-e7fb-41ba-904f-c59a2dd320a5": {
+   "money": -120.0,
+   "fechas": 1
+  },
+  "3709abda-432a-412e-accf-034287590e98": {
+   "money": -145.0,
+   "fechas": 1
+  }
+ },
+ "pozo": [
+  {
+   "date": "2026-04-11",
+   "base": 835.0
+  },
+  {
+   "date": "2026-04-25",
+   "base": 360.0
+  },
+  {
+   "date": "2026-05-23",
+   "base": 775.0
+  },
+  {
+   "date": "2026-05-30",
+   "base": 775.0
+  },
+  {
+   "date": "2026-06-06",
+   "base": 510.0
+  },
+  {
+   "date": "2026-06-20",
+   "base": 600.0
+  },
+  {
+   "date": "2026-07-04",
+   "base": 1030.0
+  },
+  {
+   "date": "2026-07-11",
+   "base": 700.0
+  },
+  {
+   "date": "2026-07-18",
+   "base": 425.0
+  },
+  {
+   "date": "2026-07-23",
+   "base": 785.0
+  }
+ ]
+}

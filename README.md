@@ -225,6 +225,31 @@ de grupos»); en los individuales, **jugadores** (regla 36). Con dos grupos de
 distinto tamaño —5 contra 3— ganar uno es 1 de 2 = 50%, así que **no** anula y
 los caminos se reparten.
 
+## Temporadas
+
+Todo lo acumulado —**Money List, Ranking, Pozo y Resultados**— se mira por
+**temporada**, y una temporada es un **año**: las fechas con `date` 2026-… son
+la temporada 2026. Dentro de la comunidad hay un selector de temporada encima de
+esas cuatro pestañas; por defecto se abre la más reciente.
+
+### Fechas jugadas antes de usar la app
+
+Una comunidad puede haber jugado media temporada antes de instalar la app. Esas
+fechas se cargan como **histórico**: entra lo que cada uno ganó o perdió y en
+cuántas fechas jugó, y eso suma a la money list, al ranking y al pozo. **No se
+inventan rondas**: no hay tarjeta ni scores de esas fechas, por eso en la Money
+List las columnas «Mejor» y «Peor» solo miran lo jugado dentro de la app.
+
+Se carga con la acción `Cargar temporada anterior a la app` (pestaña Actions),
+que lee `scripts/historico-<año>.json`. Ese archivo lleva **solo los ids internos
+de cada jugador, nunca nombres**, porque el repositorio es público. La misma
+acción con `BORRAR` deshace la carga. Escribe únicamente el bloque
+`historico.<año>` de la comunidad: las fechas ya guardadas no se tocan.
+
+Al cargar hay que **excluir las fechas que ya estén dentro de la app**, o se
+contarían dos veces. La carga de 2026 trae las 10 fechas del 11/04 al 23/07; la
+del 01/08 quedó fuera porque esa ya se jugó y consolidó en la app.
+
 ## Ranking y pozo de la comunidad
 
 Dentro de cada comunidad, además de la Money List:
@@ -234,6 +259,9 @@ Dentro de cada comunidad, además de la Money List:
   defecto 50% y 50%, editable por los administradores en **⚙️ Reglas**. Solo
   entran los miembros (no los invitados) y solo las fechas de **2 grupos o
   más** — una fecha de un grupo suma a la Money List pero no al ranking.
+  Entran **todos los miembros, también los que aún no jugaron** (con 0 y 0),
+  igual que la hoja `Normalizacion`: dejarlos fuera movía el mínimo de
+  participación y cambiaba el orden de la tabla.
   La tabla se puede ordenar por ranking, por money list o por participación.
 - **Pozo** (solo administradores): por fecha, toma lo que ganaron los
   ganadores de ese día y aplica los conceptos configurados —Mesa 35%, Prop 5%

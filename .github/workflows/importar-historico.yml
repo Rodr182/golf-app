@@ -1,0 +1,105 @@
+# Carga en la comunidad las fechas de una temporada jugadas ANTES de usar la app.
+#
+# Qué hace: escribe `historico.<temporada>` dentro de la comunidad, con lo que
+# ganó o perdió cada jugador y en cuántas fechas jugó. NO crea rondas, no toca
+# las fechas ya guardadas y no borra nada: solo agrega ese bloque.
+#
+# Los datos salen de scripts/historico-<temporada>.json, que lleva los ids
+# internos de cada jugador (nunca nombres, porque el repositorio es público).
+#
+# Para deshacerlo: correr con la temporada y marcar "borrar".
+name: Cargar temporada anterior a la app
+
+on:
+  workflow_dispatch:
+    inputs:
+      temporada:
+        description: "Temporada (año). Debe existir scripts/historico-<año>.json"
+        required: true
+        default: "2026"
+      comunidad:
+        description: "Nombre de la comunidad"
+        required: true
+        default: "Korn Ferry Boys"
+      borrar:
+        description: "Escribe BORRAR para quitar el histórico de esa temporada en vez de cargarlo"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  importar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cargar el histórico en la comunidad
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          TEMPORADA: ${{ inputs.temporada }}
+          COMUNIDAD: ${{ inputs.comunidad }}
+          BORRAR: ${{ inputs.borrar }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          archivo="scripts/historico-${TEMPORADA}.json"
+          if [ "$BORRAR" != "BORRAR" ] && [ ! -f "$archivo" ]; then
+            echo "ERROR: no existe $archivo"; exit 1
+          fi
+
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
+
+          echo "== Comunidades antes =="
+          q "select c->>'name' as nombre, c->>'_rev' as rev, (select count(*) from jsonb_object_keys(coalesce(c->'historico','{}'::jsonb))) as temporadas_historicas from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
+          echo ""
+
+          if [ "$BORRAR" = "BORRAR" ]; then
+            nuevo='null'
+            echo "== Quitando el histórico de $TEMPORADA en «$COMUNIDAD» =="
+          else
+            nuevo=$(jq -c '{fechas, desde, hasta, nota, jugadores, pozo}' "$archivo")
+            echo "== Cargando en «$COMUNIDAD» la temporada $TEMPORADA =="
+            jq -r '"   \(.fechas) fechas, de \(.desde) a \(.hasta), \(.jugadores | length) jugadores"' "$archivo"
+            jq -r '"   suma de la plata: \([.jugadores[].money] | add)"' "$archivo"
+          fi
+
+          # jsonb_set sobre la comunidad que coincide por nombre; sube _rev para
+          # que la versión de la nube gane sobre cualquier celular desactualizado.
+          if [ "$BORRAR" = "BORRAR" ]; then
+            sql=$(printf "update public.collections set value = (
+                     select jsonb_agg(case when c->>'name' = %s
+                       then (c - 'historico') || jsonb_build_object(
+                              'historico', (coalesce(c->'historico','{}'::jsonb) - %s),
+                              '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
+                       else c end)
+                     from jsonb_array_elements(value) c)
+                   where key = 'gb_comm_v2';" \
+                   "$(jq -Rn --arg v "$COMUNIDAD" '$v|tojson')" \
+                   "$(jq -Rn --arg v "$TEMPORADA" '$v|tojson')")
+          else
+            sql=$(printf "update public.collections set value = (
+                     select jsonb_agg(case when c->>'name' = %s
+                       then c || jsonb_build_object(
+                              'historico', coalesce(c->'historico','{}'::jsonb) || jsonb_build_object(%s, %s::jsonb),
+                              '_rev', (coalesce((c->>'_rev')::int, 0) + 1))
+                       else c end)
+                     from jsonb_array_elements(value) c)
+                   where key = 'gb_comm_v2';" \
+                   "$(jq -Rn --arg v "$COMUNIDAD" '$v|tojson')" \
+                   "$(jq -Rn --arg v "$TEMPORADA" '$v|tojson')" \
+                   "$(jq -Rn --arg v "$nuevo" '$v|tojson')")
+          fi
+          q "$sql" > /dev/null
+
+          echo ""
+          echo "== Comunidades después =="
+          q "select c->>'name' as nombre, c->>'_rev' as rev, jsonb_object_keys(coalesce(c->'historico','{}'::jsonb)) as temporada from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
+          echo ""
+          echo "== Resumen de lo que quedó cargado =="
+          q "select t.temporada, (h->>'fechas') as fechas, (select count(*) from jsonb_object_keys(h->'jugadores')) as jugadores from public.collections, jsonb_array_elements(value) c, jsonb_object_keys(coalesce(c->'historico','{}'::jsonb)) t(temporada), lateral (select c->'historico'->t.temporada as h) x where key='gb_comm_v2';"
+          echo ""
+          echo "Listo. Las fechas ya guardadas en la app no se tocaron."

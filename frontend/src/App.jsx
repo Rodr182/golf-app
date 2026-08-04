@@ -452,13 +452,49 @@ const shuffleIds = (arr) => {
 // Orden efectivo de un grupo: el sorteado si existe y sigue vigente
 const groupOrder = (g) => (g.drawnOrder && g.drawnOrder.length === g.playerIds.length && g.drawnOrder.every((id) => g.playerIds.includes(id)) ? g.drawnOrder : g.playerIds);
 
-/* Money list de una comunidad: acumula por participante en todas sus rondas */
-function communityMoneyList(communityId, rounds) {
+/* ---- TEMPORADAS ----
+   Una temporada es un AÑO: la del 2026 son las fechas con date 2026-… Todo lo
+   acumulado —money list, ranking, pozo, resultados— se mira por temporada. */
+const temporadaDe = (r) => String(r.date || "").slice(0, 4) || "—";
+const temporadaActual = () => String(new Date().getFullYear());
+/* Temporadas con datos en una comunidad: las de sus rondas más las del histórico */
+function temporadasDe(communityId, rounds, community) {
+  const set = new Set(rounds.filter((r) => r.communityId === communityId && !r.results.simple).map(temporadaDe));
+  Object.keys((community && community.historico) || {}).forEach((t) => set.add(t));
+  set.add(temporadaActual());
+  return [...set].sort((a, b) => (a < b ? 1 : -1));
+}
+const rondasTemporada = (communityId, rounds, temporada) =>
+  rounds.filter((r) => r.communityId === communityId && !r.results.simple && (!temporada || temporadaDe(r) === temporada));
+
+/* ---- HISTÓRICO ----
+   Fechas de la temporada jugadas ANTES de usar la app: no tienen tarjeta ni
+   scores, solo lo que cada uno ganó o perdió y en cuántas fechas jugó. Se suman
+   a la money list, al ranking y al pozo sin tocar las rondas ya guardadas.
+   Viven en `community.historico[temporada]`. */
+const HIST_VACIO = { fechas: 0, jugadores: {}, pozo: [] };
+const historicoDe = (community, temporada) => {
+  const h = ((community && community.historico) || {})[temporada];
+  if (!h) return HIST_VACIO;
+  return { fechas: +h.fechas || 0, jugadores: h.jugadores || {}, pozo: h.pozo || [],
+           desde: h.desde, hasta: h.hasta, nota: h.nota };
+};
+
+/* Money list de una comunidad en una temporada (incluye el histórico) */
+function communityMoneyList(communityId, rounds, temporada, community) {
   const agg = {};
-  rounds.filter((r) => r.communityId === communityId && !r.results.simple).forEach((r) => {
+  const fila = (id, name) => agg[id] || (agg[id] = { id, name, total: 0, rounds: 0, best: -Infinity, worst: Infinity, hist: 0, histFechas: 0 });
+  const hist = historicoDe(community, temporada);
+  Object.entries(hist.jugadores).forEach(([id, v]) => {
+    const a = fila(id, null);
+    a.total += +v.money || 0; a.rounds += +v.fechas || 0;
+    a.hist += +v.money || 0; a.histFechas += +v.fechas || 0;
+  });
+  rondasTemporada(communityId, rounds, temporada).forEach((r) => {
     r.results.rows.forEach((row) => {
       if (row.guest) return; // invitados no cuentan para la money list acumulada
-      const a = agg[row.id] || (agg[row.id] = { id: row.id, name: row.name, total: 0, rounds: 0, best: -Infinity, worst: Infinity });
+      const a = fila(row.id, row.name);
+      if (!a.name) a.name = row.name;
       a.total += row.totalMoney; a.rounds++;
       a.best = Math.max(a.best, row.totalMoney); a.worst = Math.min(a.worst, row.totalMoney);
     });
@@ -495,28 +531,42 @@ const rankWeights = (community) => {
   return s > 0 ? { wMoney: a / s, wPart: b / s, pctMoney: Math.round((a / s) * 100), pctPart: Math.round((b / s) * 100) }
                : { wMoney: .5, wPart: .5, pctMoney: 50, pctPart: 50 };
 };
-/* Fechas que cuentan para el ranking: de la comunidad, no libres y con 2+ grupos */
-const rankingRounds = (communityId, rounds) =>
-  rounds.filter((r) => r.communityId === communityId && !r.results.simple && (r.teams || []).length >= 2);
+/* Fechas que cuentan para el ranking: de la comunidad, de esa temporada, no
+   libres y con 2+ grupos */
+const rankingRounds = (communityId, rounds, temporada) =>
+  rondasTemporada(communityId, rounds, temporada).filter((r) => (r.teams || []).length >= 2);
 
 // Normalización min–max. Si todos empatan no hay rango: vale 1 para todos (no altera el orden).
 const minMax = (v, min, max) => (max === min ? 1 : (v - min) / (max - min));
 
-function communityRanking(community, rounds) {
-  const rds = rankingRounds(community.id, rounds);
-  const fechas = new Set(rds.map((r) => r.date)).size;
+function communityRanking(community, rounds, temporada) {
+  const rds = rankingRounds(community.id, rounds, temporada);
+  const hist = historicoDe(community, temporada);
+  const fechas = new Set(rds.map((r) => r.date)).size + hist.fechas;
   const members = new Set(community.members || []);
   const agg = {};
+  const fila = (id, name) => agg[id] || (agg[id] = { id, name, ml: 0, fechas: 0, hist: 0, histFechas: 0 });
+  // Entran TODOS los miembros, también los que aún no jugaron: la planilla
+  // normaliza sobre el padrón completo, así que dejar fuera a los de 0 fechas
+  // movía el mínimo de participación y cambiaba el orden del ranking.
+  members.forEach((id) => fila(id, null));
+  Object.entries(hist.jugadores).forEach(([id, v]) => {
+    if (!members.has(id)) return;
+    const a = fila(id, null);
+    a.ml += +v.money || 0; a.fechas += +v.fechas || 0;
+    a.hist += +v.money || 0; a.histFechas += +v.fechas || 0;
+  });
   rds.forEach((r) => {
     r.results.rows.forEach((row) => {
       if (row.guest || !members.has(row.id)) return; // invitados y ex-miembros fuera
-      const a = agg[row.id] || (agg[row.id] = { id: row.id, name: row.name, ml: 0, fechas: 0 });
+      const a = fila(row.id, row.name);
+      if (!a.name) a.name = row.name;
       a.ml += row.totalMoney; a.fechas++;
     });
   });
   const list = Object.values(agg);
-  const sinFechas = (community.members || []).length - list.length;
-  if (!list.length) return { rows: [], fechas, sinFechas, weights: rankWeights(community) };
+  const sinFechas = list.filter((p) => p.fechas === 0).length;
+  if (!list.length) return { rows: [], fechas, sinFechas, weights: rankWeights(community), hist };
 
   list.forEach((p) => (p.pctPart = fechas ? p.fechas / fechas : 0));
   const mls = list.map((p) => p.ml), parts = list.map((p) => p.pctPart);
@@ -538,7 +588,7 @@ function communityRanking(community, rounds) {
   };
   const pR = posBy("score"), pM = posBy("ml"), pP = posBy("fechas");
   list.forEach((p) => { p.posRank = pR[p.id]; p.posMl = pM[p.id]; p.posPart = pP[p.id]; });
-  return { rows: list.sort((a, b) => b.score - a.score), fechas, sinFechas, weights: w };
+  return { rows: list.sort((a, b) => b.score - a.score), fechas, sinFechas, weights: w, hist };
 }
 
 /* ---- POZO DE LA COMUNIDAD (hoja "POZO" del Excel) ----
@@ -550,17 +600,21 @@ const pozoConcepts = (community) => {
   const p = community.pozo;
   return Array.isArray(p) && p.length ? p.map((c) => ({ name: c.name || "—", pct: +c.pct || 0 })) : POZO_DEFAULT;
 };
-function communityPozo(community, rounds) {
+function communityPozo(community, rounds, temporada) {
   const concepts = pozoConcepts(community);
-  const rows = rounds
-    .filter((r) => r.communityId === community.id && !r.results.simple)
+  const hist = historicoDe(community, temporada);
+  const histRows = (hist.pozo || []).map((h, i) => {
+    const base = +h.base || 0;
+    return { id: "hist" + i, date: h.date, name: "Fecha anterior a la app", historico: true, grupos: null, base, amounts: concepts.map((c) => base * c.pct / 100) };
+  });
+  const rows = [...histRows, ...rondasTemporada(community.id, rounds, temporada)
     .map((r) => {
       const base = r.results.rows.reduce((s, x) => s + (x.totalMoney > 0 ? x.totalMoney : 0), 0);
       return { id: r.id, date: r.date, name: r.eventName || "Fecha", grupos: (r.teams || []).length, base, amounts: concepts.map((c) => base * c.pct / 100) };
-    })
+    })]
     .sort((a, b) => (a.date < b.date ? 1 : -1));
   const totals = concepts.map((_, i) => rows.reduce((s, r) => s + r.amounts[i], 0));
-  return { concepts, rows, totals, baseTotal: rows.reduce((s, r) => s + r.base, 0) };
+  return { concepts, rows, totals, baseTotal: rows.reduce((s, r) => s + r.base, 0), hist };
 }
 
 /* Estadísticas de scoring del jugador (vs par) sobre todas sus rondas */
@@ -3628,10 +3682,13 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
   const [h2h, setH2h] = useState({ a: me.id, b: "" });
   const [h2hAbierta, setH2hAbierta] = useState(null);   // qué fecha muestra el hoyo a hoyo
   const cur = community.currency;
-  const commRounds = rounds.filter((r) => r.communityId === community.id);
-  const list = communityMoneyList(community.id, rounds);
-  const ranking = communityRanking(community, rounds);
-  const pozo = communityPozo(community, rounds);
+  const temporadas = temporadasDe(community.id, rounds, community);
+  const [temporada, setTemporada] = useState(temporadas[0] || temporadaActual());
+  const commRounds = rounds.filter((r) => r.communityId === community.id && temporadaDe(r) === temporada);
+  const list = communityMoneyList(community.id, rounds, temporada, community);
+  const ranking = communityRanking(community, rounds, temporada);
+  const pozo = communityPozo(community, rounds, temporada);
+  const histTemp = historicoDe(community, temporada);
   const commEvents = events.filter((e) => e.communityId === community.id);
   const iAmAdmin = isAdmin(community, me.id);
   const isOwner = community.admin === me.id;
@@ -3717,6 +3774,25 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
         <Tab id="eventos" label={`Eventos (${commEvents.length})`} />
         <Tab id="resultados" label={`Resultados (${commRounds.length})`} />
       </div>
+
+      {/* TEMPORADA: money list, ranking, pozo y resultados se miran por año */}
+      {["moneylist", "ranking", "pozo", "resultados"].includes(tab) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase", letterSpacing: .4 }}>Temporada</span>
+          {temporadas.map((t) => (
+            <button key={t} onClick={() => setTemporada(t)} style={{
+              border: `1.5px solid ${t === temporada ? C.green : C.line}`, background: t === temporada ? C.green : "#fff",
+              color: t === temporada ? C.cream : C.ink, borderRadius: 999, padding: "5px 14px", fontWeight: 700, fontSize: 13,
+              cursor: "pointer", fontFamily: "'Spline Sans',sans-serif" }}>{t}</button>
+          ))}
+          {histTemp.fechas > 0 && (
+            <span style={{ fontSize: 12, color: "#7a8780" }}>
+              incluye <b>{histTemp.fechas}</b> {histTemp.fechas === 1 ? "fecha jugada" : "fechas jugadas"} antes de usar la app
+              {histTemp.desde ? ` (${histTemp.desde} a ${histTemp.hasta})` : ""}
+            </span>
+          )}
+        </div>
+      )}
 
       {tab === "jugadores" && (
         <div>
@@ -3807,13 +3883,26 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
             {list.map((p, i) => (
               <div key={p.id} style={{ display: "grid", gridTemplateColumns: "26px 1.6fr .7fr 1fr 1fr 1fr", padding: "11px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
                 <div style={{ fontWeight: 800, color: i === 0 ? C.gold : "#9aa69e", fontFamily: "'Fraunces'" }}>{i + 1}</div>
-                <div style={{ fontWeight: 600 }}>{p.name}</div>
+                <div style={{ fontWeight: 600 }}>
+                  {p.name || resolveName(p.id, players)}
+                  {p.histFechas > 0 && (
+                    <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>
+                      incluye {money(p.hist, cur)} de {p.histFechas} {p.histFechas === 1 ? "fecha previa" : "fechas previas"}
+                    </div>
+                  )}
+                </div>
                 <div style={{ textAlign: "center" }}>{p.rounds}</div>
-                <div style={{ textAlign: "right", color: C.green, fontSize: 13 }}>{money(p.best, cur)}</div>
-                <div style={{ textAlign: "right", color: C.red, fontSize: 13 }}>{money(p.worst, cur)}</div>
+                <div style={{ textAlign: "right", color: C.green, fontSize: 13 }}>{Number.isFinite(p.best) ? money(p.best, cur) : "—"}</div>
+                <div style={{ textAlign: "right", color: C.red, fontSize: 13 }}>{Number.isFinite(p.worst) ? money(p.worst, cur) : "—"}</div>
                 <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 16, color: p.total >= 0 ? C.green : C.red }}>{money(p.total, cur)}</div>
               </div>
             ))}
+            {histTemp.fechas > 0 && (
+              <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.line}`, fontSize: 12, color: "#7a8780", background: C.creamDk }}>
+                Las <b>{histTemp.fechas}</b> fechas anteriores a la app entran con su resultado en soles: no tienen tarjeta,
+                por eso «Mejor» y «Peor» solo miran las fechas jugadas dentro de la app.
+              </div>
+            )}
           </Card>
         )
       )}
@@ -3855,8 +3944,10 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                   <div key={p.id} style={{ display: "grid", gridTemplateColumns: cols, padding: "11px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
                     <div style={{ fontWeight: 800, color: p[posKey] === 1 ? C.gold : "#9aa69e", fontFamily: "'Fraunces'" }}>{p[posKey]}</div>
                     <div>
-                      <div style={{ fontWeight: 600 }}>{p.name}</div>
-                      <div style={{ fontSize: 11.5, color: "#9aa69e" }}>ML {p.posMl}º · Part {p.posPart}º</div>
+                      <div style={{ fontWeight: 600 }}>{p.name || resolveName(p.id, players)}</div>
+                      <div style={{ fontSize: 11.5, color: "#9aa69e" }}>
+                        ML {p.posMl}º · Part {p.posPart}º{p.histFechas > 0 ? ` · ${p.histFechas} previas` : ""}
+                      </div>
                     </div>
                     <div style={{ textAlign: "right", fontSize: 13, color: p.ml >= 0 ? C.green : C.red }}>{money(p.ml, cur)}</div>
                     <div style={{ textAlign: "center", fontSize: 13 }}>
@@ -3873,10 +3964,10 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                   Cada componente se normaliza entre el mejor y el peor de la tabla (0 a 100), así que premia ganar
                   plata y también estar presente.
                   <div style={{ marginTop: 6 }}>
-                    Se cuentan <b>{ranking.fechas}</b> {ranking.fechas === 1 ? "fecha válida" : "fechas válidas"} (mínimo 2 grupos).
+                    Se cuentan <b>{ranking.fechas}</b> {ranking.fechas === 1 ? "fecha válida" : "fechas válidas"} de la temporada {temporada} (mínimo 2 grupos){histTemp.fechas > 0 ? <>, de las cuales <b>{histTemp.fechas}</b> se jugaron antes de usar la app</> : null}.
                     Los invitados no acumulan{ranking.sinFechas > 0 ? <> · <b>{ranking.sinFechas}</b> {ranking.sinFechas === 1 ? "miembro aún sin fechas" : "miembros aún sin fechas"}</> : null}.
                   </div>
-                  {commRounds.length > ranking.fechas && (
+                  {commRounds.length + histTemp.fechas > ranking.fechas && (
                     <div style={{ marginTop: 6, color: "#7a8780" }}>
                       Nota: la Money List incluye todas las fechas jugadas, por eso puede no coincidir con la columna de aquí.
                     </div>
@@ -4008,7 +4099,7 @@ function CommunityDetail({ community, rounds, players, communities, me, events, 
                         <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>
                         <div style={{ fontSize: 11.5, color: "#9aa69e" }}>{r.date} · {r.grupos} {r.grupos === 1 ? "grupo" : "grupos"}</div>
                       </div>
-                      <div style={{ textAlign: "right", fontWeight: 700, fontSize: 13.5 }}>{cur}{r.base.toFixed(2)}</div>
+                      <div style={{ textAlign: "right", fontWeight: 700, fontSize: 13.5 }}>{cur}{r.base.toFixed(2)}{r.historico && <span title="Fecha jugada antes de usar la app" style={{ color: C.gold, marginLeft: 4 }}>·</span>}</div>
                       {r.amounts.map((a, j) => <div key={j} style={{ textAlign: "right", fontSize: 13.5, color: C.green }}>{cur}{a.toFixed(2)}</div>)}
                     </div>
                   ))}
