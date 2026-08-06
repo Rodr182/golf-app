@@ -50,6 +50,9 @@ const netScores = (gross, ph, si, multiStroke, r8) => {
   });
 };
 const playOrder = (start) => Array.from({ length: 18 }, (_, i) => (start - 1 + i) % 18);
+/* Todo lo que se LISTA por fecha va de la más reciente a la más antigua.
+   Las evoluciones (gráficos de progreso) usan el orden inverso. */
+const masRecientePrimero = (a, b) => String(b.date || "").localeCompare(String(a.date || ""));
 const sumRange = (a, i, j) => a.slice(i, j).reduce((s, x) => s + x, 0);
 
 /* Se apunta el hoyo todo el que iguala el mejor neto (la Regla 8 ya viene
@@ -695,7 +698,7 @@ function communityPozo(community, rounds, temporada) {
       const base = r.results.rows.reduce((s, x) => s + (x.totalMoney > 0 ? x.totalMoney : 0), 0);
       return { id: r.id, date: r.date, name: r.eventName || "Fecha", grupos: (r.teams || []).length, base, amounts: concepts.map((c) => base * c.pct / 100) };
     })]
-    .sort((a, b) => (a.date < b.date ? 1 : -1));
+    .sort(masRecientePrimero);
   const totals = concepts.map((_, i) => rows.reduce((s, r) => s + r.amounts[i], 0));
   return { concepts, rows, totals, baseTotal: rows.reduce((s, r) => s + r.base, 0), hist };
 }
@@ -757,7 +760,7 @@ function playerHoleStats(meId, rounds, courseId, courses) {
 /* Historial del Medal: en qué fechas se jugó y con qué neto quedó el jugador */
 function playerMedalHistory(meId, rounds) {
   const out = [];
-  rounds.filter((r) => !r.results.simple).forEach((r) => {
+  [...rounds].sort(masRecientePrimero).filter((r) => !r.results.simple).forEach((r) => {
     const row = r.results.rows.find((x) => x.id === meId);
     const medal = row && (row.contests || []).find((c) => c.medal);
     if (!medal) return;
@@ -809,6 +812,7 @@ const miembrosAlfabetico = (community, players) =>
 
 function headToHead(aId, bId, rounds, communityId, courses = [], reglasComunidad = null) {
   const filas = rounds.filter((r) => (!communityId || r.communityId === communityId) && !r.results.simple)
+    .sort(masRecientePrimero)
     .map((r) => {
       const ra = r.results.rows.find((x) => x.id === aId), rb = r.results.rows.find((x) => x.id === bId);
       if (!ra || !rb) return null;
@@ -2489,8 +2493,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
     if (!err) setPw({ a: "", b: "" });
   };
   const byComm = playerMoneyByCommunity(me.id, rounds, communities);
-  // Todo lo que se lista por fecha va de la más RECIENTE a la más antigua.
-  const porFechaDesc = (a, b) => (String(b.date || "").localeCompare(String(a.date || "")));
+  const porFechaDesc = masRecientePrimero;
   const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id)).sort(porFechaDesc);
   const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
   // Las fechas previas a la app también cuentan como rondas jugadas
@@ -3870,7 +3873,7 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
   const [temporada, setTemporada] = useState(temporadas[0] || temporadaActual());
   // Los resultados de la comunidad, de la fecha más reciente a la más antigua
   const commRounds = rounds.filter((r) => r.communityId === community.id && !r.soloTarjeta && temporadaDe(r) === temporada)
-    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    .sort(masRecientePrimero);
   const list = communityMoneyList(community.id, rounds, temporada, community);
   const ranking = communityRanking(community, rounds, temporada);
   const pozo = communityPozo(community, rounds, temporada);
