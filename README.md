@@ -225,6 +225,26 @@ de grupos»); en los individuales, **jugadores** (regla 36). Con dos grupos de
 distinto tamaño —5 contra 3— ganar uno es 1 de 2 = 50%, así que **no** anula y
 los caminos se reparten.
 
+## Nombres cuando se repiten
+
+Las listas de un grupo —**elegir o sortear parejas**, «Hándicaps de hoy», el
+jugador prestado, el cara a cara— muestran el **nombre de pila**, y le suman el
+**apellido solo cuando dos comparten nombre**: el día que juegan dos Rodrigos
+salen como «Rodrigo Horna» y «Rodrigo Arana». Si coinciden nombre y apellido se
+usa el nombre completo. Los invitados conservan su nombre entero.
+
+## Orden por fecha
+
+Todo lo que es una **lista de rondas** —historial del perfil, Resultados de la
+comunidad, tarjetas— va de la **más reciente a la más antigua**. Todo lo que es
+una **evolución** —el gráfico de hándicap y las barras de gross y neto ronda por
+ronda— va al revés, de la **más antigua a la más reciente**, que es como se lee
+un progreso.
+
+El **movimiento del hándicap** es un gráfico de línea: el eje está invertido a
+propósito, porque en golf bajar de hándicap es mejorar, así que los valores más
+bajos quedan arriba.
+
 ## Temporadas
 
 Todo lo acumulado —**Money List, Ranking, Pozo y Resultados**— se mira por

@@ -441,6 +441,33 @@ function resolveName(id, players) {
   if (m) return "Player " + m[1];
   return id;
 }
+/* Nombre corto dentro de un grupo: el nombre de pila, y si dos lo comparten
+   —el día que juegan dos Rodrigos— se le suma el apellido para poder
+   distinguirlos. Devuelve una función id → etiqueta. */
+function nombresCortos(ids, players) {
+  const completo = {}, pila = {}, apellido = {};
+  (ids || []).forEach((id) => {
+    completo[id] = resolveName(id, players);
+    const u = (players || []).find((p) => p.id === id);
+    // Un invitado ("Inv A") no tiene apellido aparte: su nombre es todo lo que
+    // hay, y cortarlo por el espacio lo dejaría en "Inv" para todos.
+    pila[id] = u && u.name ? String(u.name).trim() : completo[id];
+    apellido[id] = u && u.last ? String(u.last).trim() : "";
+  });
+  const cuantos = {};
+  Object.values(pila).forEach((n) => (cuantos[n] = (cuantos[n] || 0) + 1));
+  const etiqueta = {};
+  (ids || []).forEach((id) => {
+    etiqueta[id] = cuantos[pila[id]] <= 1 ? pila[id]
+      : (apellido[id] ? `${pila[id]} ${apellido[id].split(" ")[0]}` : completo[id]);
+  });
+  // si dos siguen chocando (mismo nombre y primer apellido), se usa el completo
+  const rep = {};
+  Object.values(etiqueta).forEach((n) => (rep[n] = (rep[n] || 0) + 1));
+  (ids || []).forEach((id) => { if (rep[etiqueta[id]] > 1) etiqueta[id] = completo[id]; });
+  return (id) => etiqueta[id] || resolveName(id, players);
+}
+
 const isAdmin = (community, meId) => community.admin === meId || (community.admins || []).includes(meId);
 const autoPairsIds = (ids) => (ids.length === 4 ? [[ids[0], ids[1]], [ids[2], ids[3]]] : []);
 // Barajado justo (Fisher-Yates) para el sorteo de parejas en el tee
@@ -872,12 +899,17 @@ function matchHoyoAHoyo(aId, bId, round, course, reglasComunidad) {
 }
 
 /* Movimiento del hándicap del jugador a lo largo de las rondas (más antiguo primero) */
+/* Movimiento del hándicap: de la fecha más ANTIGUA a la más reciente, que es
+   como se lee un gráfico de progreso. Se ordena por fecha y no por el orden en
+   que vengan las rondas, porque se mezclan las de la app con las previas. */
 function playerHcpHistory(meId, rounds) {
   const hist = [];
-  [...rounds].reverse().forEach((r) => {
-    r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === meId) hist.push({ date: r.date, hcp: p.hcp, communityId: r.communityId }); }));
+  (rounds || []).forEach((r) => {
+    (r.teams || []).forEach((t) => (t.players || []).forEach((p) => {
+      if (p.id === meId && p.hcp != null && p.hcp !== "") hist.push({ date: r.date, hcp: parseInt(p.hcp) || 0, communityId: r.communityId });
+    }));
   });
-  return hist;
+  return hist.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
 }
 // Persistencia local del navegador (localStorage).
 const localStore = {
@@ -1530,7 +1562,8 @@ function partialGroupSummary(course, playerList, scores, rulePct, start = 1, mul
     });
     pairByeHoles = detectBye(pHole, [0, 1]);
     if (pairByeHoles) pairByeHoles.forEach((h) => { if (filledSet.has(h)) [0, 1].forEach((i) => { if (pHole[i][h]) pPts[i].bye++; }); });
-    pairs = prs.map((pr, i) => ({ label: pr[0].name.split(" ")[0] + " & " + pr[1].name.split(" ")[0], ...pPts[i] }));
+    const cortoP = nombresCortos(nums.map((p) => p.id), nums.map((p) => ({ id: p.id, name: p.name })));
+    pairs = prs.map((pr, i) => ({ label: cortoP(pr[0].id) + " & " + cortoP(pr[1].id), ...pPts[i] }));
   }
   return { holes: filledSet.size, ph, players: nums, pts, gross, pairs, byeFrom: byeHoles ? byeHoles[0] + 1 : null, pairByeFrom: pairByeHoles ? pairByeHoles[0] + 1 : null };
 }
@@ -1631,7 +1664,7 @@ function TeeDraw({ g, players, onDraw, canDraw }) {
 
   const order = g.drawnOrder && g.drawnOrder.length === n && g.drawnOrder.every((id) => g.playerIds.includes(id)) ? g.drawnOrder : null;
   const show = spinning ? preview : order;
-  const nm = (id) => resolveName(id, players).split(" ")[0];
+  const nm = nombresCortos(g.playerIds, players);
   const manual = g.drawnMode === "manual";
 
   const start = () => {
@@ -2378,6 +2411,61 @@ function Communities({ communities, me, onOpen, onCreate }) {
 }
 
 /* ---------------- PERFIL / ESTADÍSTICAS ---------------- */
+/* Evolución del hándicap: una línea de la fecha más antigua a la más reciente.
+   Ojo con el eje: en golf BAJAR de hándicap es mejorar, así que el eje va al
+   revés — los hándicaps más bajos quedan ARRIBA. */
+function GraficoHcp({ hist }) {
+  if (!hist || hist.length === 0) return null;
+  const W = 640, H = 190, mx = 34, my = 26;
+  const vals = hist.map((h) => h.hcp);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  if (min === max) { min -= 1; max += 1; }          // línea plana: aún así se ve
+  const x = (i) => (hist.length === 1 ? W / 2 : mx + (i * (W - mx * 2)) / (hist.length - 1));
+  const y = (v) => my + ((v - min) / (max - min)) * (H - my * 2);   // menos hcp = más arriba
+  const pts = hist.map((h, i) => [x(i), y(h.hcp)]);
+  const linea = pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
+  const area = `${linea} L${pts[pts.length - 1][0].toFixed(1)},${H - my} L${pts[0][0].toFixed(1)},${H - my} Z`;
+  const primero = hist[0].hcp, ultimo = hist[hist.length - 1].hcp;
+  const delta = ultimo - primero;
+  const dia = (d) => String(d || "").slice(5).replace("-", "/");
+  // con muchas fechas no caben todas las etiquetas: se muestran salteadas
+  const paso = Math.ceil(hist.length / 8);
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+        <div style={{ fontSize: 13, color: "#7a8780" }}>
+          De <b style={{ color: C.ink }}>{primero}</b> a <b style={{ color: C.ink }}>{ultimo}</b> en {hist.length} {hist.length === 1 ? "ronda" : "rondas"}
+          {delta !== 0 && (
+            <span style={{ color: delta < 0 ? C.green : C.red, fontWeight: 700 }}>
+              {" "}· {delta < 0 ? `bajaste ${Math.abs(delta)}` : `subiste ${delta}`}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#9aa69e" }}>más abajo en el gráfico = hándicap más alto</div>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 320, height: "auto", display: "block" }} role="img"
+             aria-label={`Hándicap de ${primero} a ${ultimo} en ${hist.length} rondas`}>
+          <path d={area} fill="rgba(45,106,79,.10)" />
+          <path d={linea} fill="none" stroke={C.green} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+          {pts.map(([px, py], i) => (
+            <g key={i}>
+              <circle cx={px} cy={py} r="4" fill="#fff" stroke={C.green} strokeWidth="2" />
+              <text x={px} y={py - 10} textAnchor="middle" fontSize="12" fontWeight="700" fill={C.green}>{hist[i].hcp}</text>
+              {(i % paso === 0 || i === hist.length - 1) && (
+                <text x={px} y={H - 6} textAnchor="middle" fontSize="10.5" fill="#9aa69e">{dia(hist[i].date)}</text>
+              )}
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div style={{ fontSize: 12, color: "#7a8780", marginTop: 8 }}>
+        Hándicap con el que jugaste cada ronda, de la más antigua a la más reciente.
+      </div>
+    </div>
+  );
+}
+
 function PlayerView({ me, rounds, roundsStats, communities, players, courses: coursesProp, onSaveProfile, onChangePassword }) {
   const [openCardIdx, setOpenCardIdx] = useState(null);
   const [holeCourse, setHoleCourse] = useState(null);
@@ -2401,7 +2489,9 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
     if (!err) setPw({ a: "", b: "" });
   };
   const byComm = playerMoneyByCommunity(me.id, rounds, communities);
-  const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id));
+  // Todo lo que se lista por fecha va de la más RECIENTE a la más antigua.
+  const porFechaDesc = (a, b) => (String(b.date || "").localeCompare(String(a.date || "")));
+  const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id)).sort(porFechaDesc);
   const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
   // Las fechas previas a la app también cuentan como rondas jugadas
   const histFechas = byComm.reduce((s, b) => s + b.histFechas, 0);
@@ -2417,7 +2507,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
   const maxCat = Math.max(1, ...Object.values(stats.counts));
 
   // Tarjetas completas del jugador (18 hoyos): gross y neto por ronda
-  const myCards = rStats.map((r) => {
+  const myCards = [...rStats].sort(porFechaDesc).map((r) => {
     const course = courses.find((c) => c.id === r.courseId);
     let mp = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === me.id) mp = p; }));
     if (!mp || !course) return null;
@@ -2427,7 +2517,8 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
     const hcp = parseInt(mp.hcp) || 0;
     return { grossTotal, netTotal: grossTotal - hcp, date: r.date, hcp, courseName: course.name, previa: !!r.soloTarjeta };
   }).filter(Boolean);
-  // Evolución por fecha, de la más antigua a la más reciente
+  // Las evoluciones (gross/neto y hándicap) van al revés: de la más antigua a
+  // la más reciente, que es como se lee un gráfico de progreso.
   const trend = [...myCards].reverse();
   const avg = (arr) => (arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(1);
 
@@ -2694,22 +2785,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
         <>
           <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Movimiento de hándicap</div>
           <Card style={{ padding: 18, marginBottom: 22 }}>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap" }}>
-              {hcpHist.map((h, i) => {
-                const prev = i > 0 ? hcpHist[i - 1].hcp : null;
-                const delta = prev == null ? 0 : h.hcp - prev;
-                return (
-                  <div key={i} style={{ textAlign: "center", minWidth: 70 }}>
-                    <div style={{ fontFamily: "'Fraunces'", fontWeight: 900, fontSize: 26, color: C.green }}>{h.hcp}</div>
-                    <div style={{ fontSize: 11.5, color: delta < 0 ? C.green : delta > 0 ? C.red : "#9aa69e", fontWeight: 700 }}>
-                      {delta === 0 ? "—" : (delta > 0 ? "▲ +" + delta : "▼ " + delta)}
-                    </div>
-                    <div style={{ fontSize: 11, color: "#9aa69e", marginTop: 2 }}>{h.date}</div>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{ fontSize: 12, color: "#7a8780", marginTop: 12 }}>Hándicap registrado en cada ronda (de la más antigua a la más reciente).</div>
+            <GraficoHcp hist={hcpHist} />
           </Card>
         </>
       )}
@@ -2717,7 +2793,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
       {/* HISTORIAL */}
       <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Historial de rondas</div>
       {rounds.length === 0 && <Card style={{ padding: 22, color: "#7a8780" }}>Aún no hay rondas guardadas. Crea una desde “Iniciar Ronda”.</Card>}
-      {rounds.map((r, i) => {
+      {[...rounds].sort(porFechaDesc).map((r, i) => {
         const c = communities.find((x) => x.id === r.communityId);
         const myRow = r.results.rows.find((x) => x.id === me.id);
         const top = [...r.results.rows].sort((a, b) => b.totalMoney - a.totalMoney)[0];
@@ -3276,7 +3352,8 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                 const conHcp = playerList.filter((p) => p.hcp !== "" && p.hcp != null);
                 const adj = {}; conHcp.forEach((p) => (adj[p.id] = adjustedHcp(parseInt(p.hcp) || 0, community.rulePct)));
                 const base = conHcp.length ? Math.min(...conHcp.map((p) => adj[p.id])) : 0;
-                const deLaBase = conHcp.filter((p) => adj[p.id] === base).map((p) => p.name.split(" ")[0]);
+                const cortoJ = nombresCortos(playerList.map((p) => p.id), playerList.map((p) => ({ id: p.id, name: p.name })));
+                const deLaBase = conHcp.filter((p) => adj[p.id] === base).map((p) => cortoJ(p.id));
                 return (
                   <>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
@@ -3285,7 +3362,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                         const st = sin ? null : Math.min(adj[p.id] - base, 18);
                         return (
                           <Chip key={p.id} tone={st === 0 ? "gold" : "neutral"}>
-                            {p.name.split(" ")[0]} · hcp {sin ? "—" : p.hcp} (aj. {sin ? "—" : adj[p.id]}) · {sin ? "—" : st === 0 ? "da los strokes" : `${st} stroke${st === 1 ? "" : "s"}`}
+                            {cortoJ(p.id)} · hcp {sin ? "—" : p.hcp} (aj. {sin ? "—" : adj[p.id]}) · {sin ? "—" : st === 0 ? "da los strokes" : `${st} stroke${st === 1 ? "" : "s"}`}
                           </Chip>
                         );
                       })}
@@ -3492,7 +3569,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               const deCuatro = groups.filter((x) => x.id !== tg.id && x.playerIds.length === 4);
               const candidatos = (deCuatro.length ? deCuatro : groups.filter((x) => x.id !== tg.id)).flatMap((x) => x.playerIds);
               return (
-              <Field key={tg.id} label={`Prestado para el Grupo ${tg.id} (${tg.playerIds.map((id) => resolveName(id, players).split(" ")[0]).join(", ")})`}>
+              <Field key={tg.id} label={`Prestado para el Grupo ${tg.id} (${(() => { const c = nombresCortos(tg.playerIds, players); return tg.playerIds.map(c).join(", "); })()})`}>
                 <select style={inputStyle} value={loanChoices[tg.id] || ""} onChange={(e) => setLoanChoices({ ...loanChoices, [tg.id]: e.target.value || undefined })}>
                   <option value="">Elegir jugador…</option>
                   {candidatos.map((pid) => (
@@ -3712,7 +3789,7 @@ function CommunityRulesEditor({ community, courses, onCancel, onSave }) {
 
 /* Tira hoyo a hoyo del match entre dos jugadores en una fecha. */
 function MatchHoyoAHoyo({ m, nA, nB }) {
-  const corto = (n) => (n || "").split(" ")[0];
+  const corto = (n) => n || "";   // ya vienen desambiguados desde el cara a cara
   let acum = 0;
   const estados = m.hoyos.map((h) => { acum += h.gana === "a" ? 1 : h.gana === "b" ? -1 : 0; return acum; });
   const celda = (h, lado) => {
@@ -3791,7 +3868,9 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
   const cur = community.currency;
   const temporadas = temporadasDe(community.id, rounds, community);
   const [temporada, setTemporada] = useState(temporadas[0] || temporadaActual());
-  const commRounds = rounds.filter((r) => r.communityId === community.id && !r.soloTarjeta && temporadaDe(r) === temporada);
+  // Los resultados de la comunidad, de la fecha más reciente a la más antigua
+  const commRounds = rounds.filter((r) => r.communityId === community.id && !r.soloTarjeta && temporadaDe(r) === temporada)
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   const list = communityMoneyList(community.id, rounds, temporada, community);
   const ranking = communityRanking(community, rounds, temporada);
   const pozo = communityPozo(community, rounds, temporada);
@@ -4093,6 +4172,9 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
         const listo = h2h.a && h2h.b && h2h.a !== h2h.b;
         const r = listo ? headToHead(h2h.a, h2h.b, roundsStats || rounds, community.id, courses, { rulePct: community.rulePct, regla8: community.regla8, regla8Holes: [], multiStroke: community.multiStroke }) : null;
         const nA = resolveName(h2h.a, players), nB = resolveName(h2h.b, players);
+        // si los dos se llaman igual de pila, se muestran con apellido
+        const cortoH2H = nombresCortos([h2h.a, h2h.b].filter(Boolean), players);
+        const cA = h2h.a ? cortoH2H(h2h.a) : nA, cB = h2h.b ? cortoH2H(h2h.b) : nB;
         return (
           <div>
             <Card style={{ padding: 18, marginBottom: 14 }}>
@@ -4142,8 +4224,8 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
                 <Card style={{ overflow: "hidden" }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
                     <div>Fecha</div>
-                    <div style={{ textAlign: "right" }}>{nA.split(" ")[0]}<div style={{ fontWeight: 500, fontSize: 11, opacity: .75 }}>neto del match · hcp · gross</div></div>
-                    <div style={{ textAlign: "right" }}>{nB.split(" ")[0]}<div style={{ fontWeight: 500, fontSize: 11, opacity: .75 }}>neto del match · hcp · gross</div></div>
+                    <div style={{ textAlign: "right" }}>{cA}<div style={{ fontWeight: 500, fontSize: 11, opacity: .75 }}>neto del match · hcp · gross</div></div>
+                    <div style={{ textAlign: "right" }}>{cB}<div style={{ fontWeight: 500, fontSize: 11, opacity: .75 }}>neto del match · hcp · gross</div></div>
                   </div>
                   {r.filas.map((f, i) => {
                     const abierta = h2hAbierta === i;
@@ -4174,7 +4256,7 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
                           );
                         })}
                       </div>
-                      {abierta && f.match && <MatchHoyoAHoyo m={f.match} nA={nA} nB={nB} />}
+                      {abierta && f.match && <MatchHoyoAHoyo m={f.match} nA={cA} nB={cB} />}
                     </div>
                     );
                   })}
