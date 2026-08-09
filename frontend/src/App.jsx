@@ -962,8 +962,27 @@ function mergeEventPair(pref, other) {
       const mine = (g.scores || {})[pid]; const theirs = og.scores[pid];
       if (mine && theirs) scores[pid] = mine.map((v, h) => ((v === "" || v == null) ? (theirs[h] ?? "") : v));
     });
-    return { ...g, scores, drawnOrder: g.drawnOrder || og.drawnOrder || null, drawnMode: g.drawnMode || og.drawnMode || null };
+    /* Los hándicaps del día se salvaban enteros del celular con el _rev más
+       alto: si dos personas anotan la misma fecha, la corrección de una se
+       deshacía sola. Ahora cada hándicap lleva su hora y gana el último puesto,
+       jugador por jugador. Sin hora (fechas viejas) manda el _rev, como antes. */
+    const hcps = { ...(og.hcps || {}), ...(g.hcps || {}) };
+    const hcpsAt = { ...(og.hcpsAt || {}) };
+    Object.entries(g.hcpsAt || {}).forEach(([pid, t]) => { if (hcpsAt[pid] == null || t > hcpsAt[pid]) hcpsAt[pid] = t; });
+    Object.keys(og.hcps || {}).forEach((pid) => {
+      const mio = (g.hcpsAt || {})[pid], suyo = (og.hcpsAt || {})[pid];
+      if (suyo != null && (mio == null || suyo > mio)) hcps[pid] = og.hcps[pid];
+    });
+    return { ...g, scores, hcps, ...(Object.keys(hcpsAt).length ? { hcpsAt } : {}),
+      drawnOrder: g.drawnOrder || og.drawnOrder || null, drawnMode: g.drawnMode || og.drawnMode || null };
   });
+  /* Un grupo que existe solo en el OTRO celular se perdía: la lista de grupos
+     salía entera del que tenía el _rev más alto. Si ese grupo ya tiene golpes
+     anotados se trae, porque es trabajo que no se puede volver a hacer. Si está
+     vacío no se arrastra, para que borrar un grupo siga funcionando. */
+  const conScores = (g) => Object.values((g && g.scores) || {}).some((a) => (a || []).some((v) => v !== "" && v != null));
+  const yaEstan = new Set(merged.groups.map((g) => g.id));
+  (other.groups || []).forEach((og) => { if (!yaEstan.has(og.id) && conScores(og)) merged.groups.push(og); });
   return merged;
 }
 function mergeEvents(localList, remoteList) {
@@ -1192,11 +1211,21 @@ function useVersionNueva(intervaloMs = 10 * 60 * 1000) {
   return hayNueva;
 }
 
-/* Estado del guardado en la nube, para poder avisarlo en pantalla */
-function useSyncStatus() {
+/* Estado del guardado en la nube, para poder avisarlo en pantalla.
+   `subiendoLento` se enciende recién cuando la subida se demora: un guardado
+   normal termina en menos de un segundo y no tiene por qué avisar nada. Avisar
+   en cada tecla hacía que el anotador viera la pantalla saltar todo el tiempo. */
+function useSyncStatus(demoraMs = 1500) {
   const [, forzar] = useState(0);
+  const [lento, setLento] = useState(false);
   useEffect(() => subscribeSync(() => forzar((n) => n + 1)), []);
-  return { subiendo: syncStatus.pendientes.size, fallidas: syncStatus.fallidas.size, error: syncStatus.ultimoError };
+  const ocupado = syncStatus.pendientes.size > 0;
+  useEffect(() => {
+    if (!ocupado) { setLento(false); return; }
+    const t = setTimeout(() => setLento(true), demoraMs);
+    return () => clearTimeout(t);
+  }, [ocupado, demoraMs]);
+  return { subiendo: syncStatus.pendientes.size, subiendoLento: ocupado && lento, fallidas: syncStatus.fallidas.size, error: syncStatus.ultimoError };
 }
 
 function useFonts() {
@@ -1251,6 +1280,10 @@ function Field({ label, children, hint }) {
   </label>;
 }
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${C.line}`, background: "#fff", fontFamily: "'Spline Sans',sans-serif", fontSize: 15, color: C.ink, outline: "none" };
+/* Los campos de fecha en el iPhone traen el estilo nativo de Safari: se hacen
+   más anchos que el resto (se salen del recuadro), más altos y con el texto
+   centrado. Se les apaga esa apariencia para que midan igual que los demás. */
+const dateStyle = { ...inputStyle, WebkitAppearance: "none", appearance: "none", minWidth: 0, maxWidth: "100%", height: 45, display: "block", textAlign: "left" };
 
 /* ---------------- AUTH ---------------- */
 /* Quita el token de la barra de direcciones para que no quede a la vista
@@ -1433,7 +1466,7 @@ function Auth({ onAuth, players, setPlayers }) {
           <Field label="Email*"><input style={inputStyle} type="email" value={f.email} onChange={upd("email")} placeholder="tu@correo.com" /></Field>
           {mode === "signup" && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={upd("birth")} /></Field>
+              <Field label="Fecha de nacimiento"><input style={dateStyle} type="date" value={f.birth} onChange={upd("birth")} /></Field>
               <Field label="Hándicap" hint="Si eres hándicap positivo (+2), escríbelo como −2"><input style={inputStyle} type="number" step="1" value={f.hcp} onChange={upd("hcp")} placeholder="ej. 12 · +2 se escribe -2" /></Field>
             </div>
           )}
@@ -2147,7 +2180,7 @@ function StartRound({ courses, communities, players, me, onStart, onCancel, init
               Juegas por fuera de las comunidades: hándicap al 100% (personalizable abajo), y en el siguiente paso puedes agregar invitados que no tienen cuenta.
             </div>
           )}
-          <Field label="Fecha"><input style={inputStyle} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Fecha"><input style={dateStyle} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
           <Field label="Nombre de la ronda (opcional)">
             <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder={communityId === "libre" ? "Ej: Sábado en Los Inkas" : "Ej: Ronda rápida"} />
           </Field>
@@ -2540,7 +2573,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
             <Field label="Apellido"><input style={inputStyle} value={f.last} onChange={(e) => setF({ ...f, last: e.target.value })} /></Field>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Fecha de nacimiento"><input style={inputStyle} type="date" value={f.birth} onChange={(e) => setF({ ...f, birth: e.target.value })} /></Field>
+            <Field label="Fecha de nacimiento"><input style={dateStyle} type="date" value={f.birth} onChange={(e) => setF({ ...f, birth: e.target.value })} /></Field>
             <Field label="Hándicap actual" hint="Si eres hándicap positivo (+2), escríbelo como −2"><input style={inputStyle} type="number" step="1" value={f.hcp} onChange={(e) => setF({ ...f, hcp: e.target.value })} placeholder="ej. 12 · +2 se escribe -2" /></Field>
           </div>
           <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: -4, marginBottom: 12 }}>
@@ -2919,8 +2952,16 @@ function SalidaEditable({ start, onChange, compacto = false }) {
 function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onDeleteRound, onClose, mode = "admin", rounds = [] }) {
   const course = courses.find((c) => c.id === event.courseId) || courses[0];
   const admin = isAdmin(community, me.id);
-  // _rev crece con cada cambio: en la fusión entre celulares gana la versión más nueva
-  const updateEvent = (patch) => setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, ...patch, _rev: (e._rev || 0) + 1 } : e)));
+  /* _rev crece con cada cambio: en la fusión entre celulares gana la versión
+     más nueva. El parche puede ser una FUNCIÓN del evento vigente, y esa es la
+     forma correcta cuando lo nuevo se calcula a partir de lo anterior: si dos
+     toques caen antes de que la pantalla se vuelva a dibujar, el segundo leería
+     el evento viejo y borraría lo del primero (un score que "no se guardó"). */
+  const updateEvent = (patch) => setEvents((prev) => prev.map((e) => {
+    if (e.id !== event.id) return e;
+    const p = typeof patch === "function" ? patch(e) : patch;
+    return { ...e, ...p, _rev: (e._rev || 0) + 1 };
+  }));
   const STATUS = { inscripcion: "Inscripción abierta", grupos: "Armando grupos", jugando: "En juego", cerrado: "Cerrado" };
   const registered = event.registered || [];
   const groups = event.groups || [];
@@ -3016,27 +3057,46 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
 
   // ---- grupos ----
   const addGroup = () => updateEvent({ groups: [...groups, { id: (groups.at(-1)?.id || 0) + 1, start: 1, playerIds: [], hcps: {}, scorerId: null, loanPlayerId: null, dropPlayerId: null, scores: {} }] });
-  const setGroup = (gid, patch) => updateEvent({ groups: groups.map((g) => (g.id === gid ? { ...g, ...patch } : g)) });
+  // `patch` puede ser una función del grupo vigente, para no partir de una copia vieja.
+  const setGroup = (gid, patch) => updateEvent((ev) => ({
+    groups: (ev.groups || []).map((g) => (g.id === gid ? { ...g, ...(typeof patch === "function" ? patch(g) : patch) } : g)),
+  }));
   const removeGroup = (gid) => updateEvent({ groups: groups.filter((g) => g.id !== gid) });
+  // Un grupo admite hasta 5 y nadie puede estar en dos grupos a la vez.
+  const cabeEnGrupo = (gid, pid) => {
+    const g = groups.find((x) => x.id === gid);
+    if (!g || g.playerIds.includes(pid)) return true;   // sacarlo siempre se puede
+    return g.playerIds.length < 5 && !groupPlayerIds(gid).includes(pid);
+  };
   const toggleGroupPlayer = (gid, pid) => {
-    const g = groups.find((x) => x.id === gid);
-    const has = g.playerIds.includes(pid);
-    if (!has && g.playerIds.length >= 5) return;
-    if (!has && groupPlayerIds(gid).includes(pid)) return; // no duplicar entre grupos
-    const playerIds = has ? g.playerIds.filter((x) => x !== pid) : [...g.playerIds, pid];
-    const hcps = { ...g.hcps };
-    if (!has) { const rec = players.find((p) => p.id === pid); hcps[pid] = rec && typeof rec.hcp === "number" ? rec.hcp : 0; }
-    else delete hcps[pid];
-    const scorerId = g.scorerId === pid && has ? null : g.scorerId;
-    // si cambia la conformación del grupo, el sorteo de parejas anterior queda sin efecto
-    setGroup(gid, { playerIds, hcps, scorerId, drawnOrder: null, drawnMode: null });
+    if (!cabeEnGrupo(gid, pid)) return;
+    setGroup(gid, (g) => {
+      const has = g.playerIds.includes(pid);
+      const playerIds = has ? g.playerIds.filter((x) => x !== pid) : [...g.playerIds, pid];
+      const hcps = { ...g.hcps };
+      const hcpsAt = { ...(g.hcpsAt || {}) };
+      if (!has) {
+        const rec = players.find((p) => p.id === pid);
+        hcps[pid] = rec && typeof rec.hcp === "number" ? rec.hcp : 0;
+        hcpsAt[pid] = Date.now();
+      } else { delete hcps[pid]; delete hcpsAt[pid]; }
+      const scorerId = g.scorerId === pid && has ? null : g.scorerId;
+      // si cambia la conformación del grupo, el sorteo de parejas anterior queda sin efecto
+      return { playerIds, hcps, hcpsAt, scorerId, drawnOrder: null, drawnMode: null };
+    });
   };
-  const setGroupHcp = (gid, pid, v) => { const g = groups.find((x) => x.id === gid); setGroup(gid, { hcps: { ...g.hcps, [pid]: v } }); };
-  const setGroupScore = (gid, pid, h, v) => {
-    const g = groups.find((x) => x.id === gid);
-    const cur = g.scores[pid] ? g.scores[pid].slice() : new Array(18).fill("");
-    cur[h] = v; setGroup(gid, { scores: { ...g.scores, [pid]: cur } });
-  };
+  // Con la hora: si dos celulares tocan el mismo hándicap, gana el último.
+  const setGroupHcp = (gid, pid, v) => setGroup(gid, (g) => ({
+    hcps: { ...g.hcps, [pid]: v },
+    hcpsAt: { ...(g.hcpsAt || {}), [pid]: Date.now() },
+  }));
+  // Cada score se escribe sobre la tarjeta vigente, no sobre la del último
+  // dibujado: así dos golpes anotados seguidos no se pisan entre ellos.
+  const setGroupScore = (gid, pid, h, v) => setGroup(gid, (g) => {
+    const cur = (g.scores || {})[pid] ? g.scores[pid].slice() : new Array(18).fill("");
+    cur[h] = v;
+    return { scores: { ...(g.scores || {}), [pid]: cur } };
+  });
   // En una ronda rápida (o libre) se admite jugar solo o en pareja: ahí no hay
   // Machetero, se guarda como ronda simple (tarjeta y estadísticas).
   const minPorGrupo = event.quick ? 1 : 3;
@@ -4323,7 +4383,7 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
                 {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </Field>
-            <Field label="Fecha"><input style={inputStyle} type="date" value={evForm.date} onChange={(e) => setEvForm({ ...evForm, date: e.target.value })} /></Field>
+            <Field label="Fecha"><input style={dateStyle} type="date" value={evForm.date} onChange={(e) => setEvForm({ ...evForm, date: e.target.value })} /></Field>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
               <Btn variant="ghost" onClick={() => setCreatingEvent(false)}>Cancelar</Btn>
               <Btn onClick={() => {
@@ -4852,11 +4912,15 @@ export default function App() {
   const etiquetaEvento = (ev) => (isScorer(ev) ? "Anotar scores →" : isEventAdmin(ev) ? "Gestionar →" : "👀 Ver en vivo →");
   const EVJUMP_STATUS = { inscripcion: ["Inscripción abierta", "gold"], grupos: ["Armando grupos", "gold"], jugando: ["En juego", "green"] };
 
+  /* Barra de avisos: SOLO para lo que se queda en pantalla (un guardado que
+     falló, una versión nueva). El "Guardando…" de cada tecla vive abajo, en
+     `AvisoGuardando`, porque esta barra ocupa lugar y empuja todo el contenido:
+     aparecía y desaparecía con cada score y la pantalla saltaba. */
   const AvisosBarra = () => {
     if (!CLOUD && !versionNueva) return null;
     const hayFallo = sync.fallidas > 0;
-    if (!hayFallo && !sync.subiendo && !versionNueva) return null;
-    const [fondo, texto] = hayFallo ? ["#b4452f", "#fff"] : versionNueva ? [C.gold, "#2c2003"] : ["#143b2c", C.lime];
+    if (!hayFallo && !versionNueva) return null;
+    const [fondo, texto] = hayFallo ? ["#b4452f", "#fff"] : [C.gold, "#2c2003"];
     return (
       <div style={{ background: fondo, color: texto, padding: "9px 14px", fontSize: 13.5, fontWeight: 600,
         display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap",
@@ -4866,15 +4930,26 @@ export default function App() {
             <span>⚠️ No se pudo guardar en la nube ({sync.fallidas} {sync.fallidas === 1 ? "cambio" : "cambios"}). Lo anotado sigue en este celular.</span>
             <button onClick={reintentarGuardado} style={{ border: "1px solid rgba(255,255,255,.6)", background: "transparent", color: texto, borderRadius: 8, padding: "4px 12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Reintentar</button>
           </>
-        ) : versionNueva ? (
+        ) : (
           <>
             <span>✨ Hay una versión nueva de la app.</span>
             <button onClick={() => window.location.reload()} style={{ border: "1px solid rgba(0,0,0,.35)", background: "transparent", color: texto, borderRadius: 8, padding: "4px 12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Actualizar ahora</button>
           </>
-        ) : (
-          <span>⏳ Guardando…</span>
         )}
       </div>
+    );
+  };
+
+  /* Aviso flotante de guardado: no ocupa lugar en la página, así que no mueve
+     nada de lo que el anotador está mirando. Solo sale si la subida se demora
+     más de un segundo y medio (señal mala en la cancha). */
+  const AvisoGuardando = () => {
+    if (!CLOUD || !sync.subiendoLento || sync.fallidas > 0) return null;
+    return (
+      <div aria-live="polite" style={{ position: "fixed", left: "50%", transform: "translateX(-50%)",
+        bottom: isMobile ? 76 : 18, zIndex: 30, background: "#143b2c", color: C.lime,
+        padding: "7px 15px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, pointerEvents: "none",
+        boxShadow: "0 6px 18px rgba(0,0,0,.22)", fontFamily: "'Spline Sans',sans-serif" }}>⏳ Guardando…</div>
     );
   };
 
@@ -4895,6 +4970,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: "'Spline Sans',sans-serif", color: C.ink, background: C.cream, minHeight: "100%" }}>
       <AvisosBarra />
+      <AvisoGuardando />
       {/* TOP BAR */}
       <div style={{ background: C.greenDeep, padding: isMobile ? "10px 14px" : "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, position: "sticky", top: 0, zIndex: 20 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
