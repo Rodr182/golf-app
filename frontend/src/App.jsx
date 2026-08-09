@@ -53,6 +53,14 @@ const playOrder = (start) => Array.from({ length: 18 }, (_, i) => (start - 1 + i
 /* Todo lo que se LISTA por fecha va de la más reciente a la más antigua.
    Las evoluciones (gráficos de progreso) usan el orden inverso. */
 const masRecientePrimero = (a, b) => String(b.date || "").localeCompare(String(a.date || ""));
+/* "2026-08-08" → "8 Ago". Lleva el año solo si no es el de este año. */
+const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+const fechaCorta = (d) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ""));
+  if (!m) return String(d || "—");
+  const corta = `${+m[3]} ${MESES_CORTOS[+m[2] - 1] || m[2]}`;
+  return m[1] === String(new Date().getFullYear()) ? corta : `${corta} ${m[1]}`;
+};
 const sumRange = (a, i, j) => a.slice(i, j).reduce((s, x) => s + x, 0);
 
 /* Se apunta el hoyo todo el que iguala el mejor neto (la Regla 8 ya viene
@@ -914,6 +922,24 @@ function playerHcpHistory(meId, rounds) {
     }));
   });
   return hist.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+}
+/* El hándicap con el que jugó la última vez. Es mejor punto de partida que el
+   del perfil: sale de la tarjeta de la fecha más reciente —incluidas las
+   anteriores a la app—, y el perfil muchos no lo llenan nunca. */
+function ultimoHcpJugado(meId, rounds) {
+  const hist = playerHcpHistory(meId, rounds);
+  if (!hist.length) return null;
+  const u = hist[hist.length - 1];          // playerHcpHistory va de la más antigua a la más reciente
+  return { hcp: u.hcp, date: u.date };
+}
+/* De dónde sale el hándicap con el que entra un jugador a un grupo:
+   1) el de su última fecha jugada, 2) el de su perfil, 3) cero. */
+function hcpInicial(pid, players, rounds) {
+  const u = ultimoHcpJugado(pid, rounds);
+  if (u) return { hcp: u.hcp, origen: "jugado", date: u.date };
+  const rec = (players || []).find((p) => p.id === pid);
+  if (rec && typeof rec.hcp === "number") return { hcp: rec.hcp, origen: "perfil" };
+  return { hcp: 0, origen: "sin dato" };
 }
 // Persistencia local del navegador (localStorage).
 const localStore = {
@@ -2049,7 +2075,7 @@ const libreCommunityFor = (ev) => ({
 const communityForEvent = (ev, communities) =>
   ev.communityId === "libre" ? libreCommunityFor(ev) : communities.find((c) => c.id === ev.communityId);
 
-function StartRound({ courses, communities, players, me, onStart, onCancel, initialEvent }) {
+function StartRound({ courses, communities, players, me, onStart, onCancel, initialEvent, roundsStats = [] }) {
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
   const [date, setDate] = useState(initialEvent?.date || new Date().toISOString().slice(0, 10));
@@ -2089,7 +2115,7 @@ function StartRound({ courses, communities, players, me, onStart, onCancel, init
     const exists = t.players.find((p) => p.id === pid);
     let players2;
     if (exists) players2 = t.players.filter((p) => p.id !== pid);
-    else { if (t.players.length >= 5) return; const rec = players.find((x) => x.id === pid); players2 = [...t.players, { id: pid, name: memberPool.find((m) => m.id === pid)?.name || pid, hcp: rec && typeof rec.hcp === "number" ? rec.hcp : 0, gross: new Array(18).fill("") }]; }
+    else { if (t.players.length >= 5) return; players2 = [...t.players, { id: pid, name: memberPool.find((m) => m.id === pid)?.name || pid, hcp: hcpInicial(pid, players, roundsStats).hcp, gross: new Array(18).fill("") }]; }
     // el anotador sigue siendo válido si continúa en el equipo; si no, se recalcula
     const keep = t.scorerId && (players2.some((p) => p.id === t.scorerId) || t.scorerId === me.id);
     setTeam(tid, { players: players2, pairs: autoPairs(players2), scorerId: keep ? t.scorerId : defaultScorer(players2) });
@@ -2540,6 +2566,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
   const rStats = roundsStats || rounds;
   const stats = playerScoreStats(me.id, rStats, courses);
   const hcpHist = playerHcpHistory(me.id, rStats);
+  const ultJugado = ultimoHcpJugado(me.id, rStats);
   const maxCat = Math.max(1, ...Object.values(stats.counts));
 
   // Tarjetas completas del jugador (18 hoyos): gross y neto por ronda
@@ -2606,9 +2633,16 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
           <div style={{ fontFamily: "'Fraunces'", fontSize: 22, fontWeight: 600, marginTop: 4 }}>{me.name} {me.last}</div>
           <div style={{ color: "#7a8780", fontSize: 13.5, marginTop: 2 }}>{me.email}</div>
           <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <Chip tone="green">hcp {me.hcp ?? "—"}</Chip>
+            {/* Si nunca cargó el hándicap en su perfil, se muestra con el que
+                jugó la última vez, que es el que la app usa igual. */}
+            <Chip tone="green">hcp {me.hcp ?? (ultJugado ? ultJugado.hcp : "—")}</Chip>
             {me.birth && <Chip tone="neutral">{me.birth}</Chip>}
           </div>
+          {me.hcp == null && ultJugado && (
+            <div style={{ fontSize: 11.5, color: C.gold, fontWeight: 700, marginTop: 6, lineHeight: 1.45 }}>
+              Es el de tu última fecha ({fechaCorta(ultJugado.date)}). Cárgalo en tu perfil para que sea el tuyo.
+            </div>
+          )}
         </Card>
         <Card style={{ padding: 18 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Rondas jugadas</div>
@@ -2949,7 +2983,10 @@ function SalidaEditable({ start, onChange, compacto = false }) {
 /* ---------------- GESTOR DE EVENTOS (inscripción → grupos → juego → consolidación) ---------------- */
 /* mode: "admin" = gestión desde la comunidad (sin llenado de scores);
    "play" = anotación de scores desde Iniciar Ronda. */
-function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onDeleteRound, onClose, mode = "admin", rounds = [] }) {
+function EventManager({ event, community, courses, players, me, setEvents, onSaveRound, onDeleteRound, onClose, mode = "admin", rounds = [], roundsStats = null }) {
+  // Para el hándicap de arranque valen todas las tarjetas, también las fechas
+  // anteriores a la app: es de donde sale "con cuánto jugó la última vez".
+  const tarjetas = roundsStats || rounds;
   const course = courses.find((c) => c.id === event.courseId) || courses[0];
   const admin = isAdmin(community, me.id);
   /* _rev crece con cada cambio: en la fusión entre celulares gana la versión
@@ -3076,8 +3113,9 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
       const hcps = { ...g.hcps };
       const hcpsAt = { ...(g.hcpsAt || {}) };
       if (!has) {
-        const rec = players.find((p) => p.id === pid);
-        hcps[pid] = rec && typeof rec.hcp === "number" ? rec.hcp : 0;
+        // Entra con el hándicap de su última fecha jugada; si nunca jugó, con
+        // el de su perfil, y recién si tampoco lo tiene, en cero.
+        hcps[pid] = hcpInicial(pid, players, tarjetas).hcp;
         hcpsAt[pid] = Date.now();
       } else { delete hcps[pid]; delete hcpsAt[pid]; }
       const scorerId = g.scorerId === pid && has ? null : g.scorerId;
@@ -3441,15 +3479,27 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               })()
             ) : (
               <div style={{ marginTop: 10 }}>
-                {playerList.map((p) => (
-                  <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr", gap: 8, alignItems: "center", marginBottom: 6 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>
-                    <input style={{ ...inputStyle, padding: "8px 10px" }} type="number" step="1" value={g.hcps[p.id] ?? ""}
-                      onChange={(e) => setGroupHcp(g.id, p.id, e.target.value === "" ? "" : parseInt(e.target.value))} />
-                    <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700 }}>Aj. {g.hcps[p.id] === "" || g.hcps[p.id] == null ? "—" : adjustedHcp(parseInt(g.hcps[p.id]) || 0, community.rulePct)}</div>
-                  </div>
-                ))}
-                <div style={{ fontSize: 12, color: "#7a8780" }}>Usa el hándicap vigente de cada jugador el día de la ronda ({community.rulePct}% según la regla de la comunidad). Los strokes por hoyo se recalculan al instante.</div>
+                {playerList.map((p) => {
+                  // De dónde salió el número que está en la casilla, para que el
+                  // anotador sepa si vale la pena revisarlo.
+                  const ult = ultimoHcpJugado(p.id, tarjetas);
+                  const perfil = players.find((x) => x.id === p.id);
+                  const origen = ult ? `jugó ${ult.hcp} el ${fechaCorta(ult.date)}`
+                    : perfil && typeof perfil.hcp === "number" ? `de su perfil (${perfil.hcp})`
+                    : "sin fechas ni perfil: va en 0";
+                  return (
+                    <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1.4fr .7fr .7fr", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>
+                        <div style={{ fontSize: 11.5, color: ult ? "#7a8780" : C.gold, fontWeight: ult ? 400 : 700 }}>{origen}</div>
+                      </div>
+                      <input style={{ ...inputStyle, padding: "8px 10px" }} type="number" step="1" value={g.hcps[p.id] ?? ""}
+                        onChange={(e) => setGroupHcp(g.id, p.id, e.target.value === "" ? "" : parseInt(e.target.value))} />
+                      <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700 }}>Aj. {g.hcps[p.id] === "" || g.hcps[p.id] == null ? "—" : adjustedHcp(parseInt(g.hcps[p.id]) || 0, community.rulePct)}</div>
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 12, color: "#7a8780" }}>Cada uno entra con el hándicap de su última fecha jugada; corrígelo si hoy juega con otro ({community.rulePct}% según la regla de la comunidad). Los strokes por hoyo se recalculan al instante.</div>
               </div>
             )}
           </Card>
@@ -3604,10 +3654,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
                       <Btn variant="gold" disabled={!swapOut || !swapIn} onClick={() => {
                         const playerIds = g.playerIds.map((id) => (id === swapOut ? swapIn : id));
                         const hcps = { ...g.hcps }; delete hcps[swapOut];
-                        const rec = players.find((p) => p.id === swapIn); hcps[swapIn] = rec && typeof rec.hcp === "number" ? rec.hcp : 0;
+                        hcps[swapIn] = hcpInicial(swapIn, players, tarjetas).hcp;
+                        const hcpsAt = { ...(g.hcpsAt || {}) }; delete hcpsAt[swapOut]; hcpsAt[swapIn] = Date.now();
                         const scores = { ...g.scores }; delete scores[swapOut];
                         const scorerId = g.scorerId === swapOut ? swapIn : g.scorerId;
-                        setGroup(g.id, { playerIds, hcps, scores, scorerId, drawnOrder: null, drawnMode: null });
+                        setGroup(g.id, { playerIds, hcps, hcpsAt, scores, scorerId, drawnOrder: null, drawnMode: null });
                         if (!registered.includes(swapIn)) updateEvent({ registered: [...registered, swapIn] });
                         setSwapFor(null); setSwapOut(""); setSwapIn("");
                       }}>Confirmar cambio</Btn>
@@ -4373,7 +4424,7 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
 
       {tab === "eventos" && (
         managingEvent ? (
-          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} rounds={rounds} onSaveRound={onSaveRound} onDeleteRound={onDeleteRound} onClose={() => setManagingEventId(null)} />
+          <EventManager event={managingEvent} community={community} courses={courses} players={[...players, ...(managingEvent.guests || [])]} me={me} setEvents={setEvents} rounds={rounds} roundsStats={roundsStats} onSaveRound={onSaveRound} onDeleteRound={onDeleteRound} onClose={() => setManagingEventId(null)} />
         ) : creatingEvent ? (
           <Card style={{ padding: 22, maxWidth: 520 }}>
             <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 20, color: C.green, marginBottom: 14 }}>Nuevo evento</div>
@@ -5090,7 +5141,7 @@ export default function App() {
           if (!ev || !comm) return null;
           return (
             <EventManager mode="play" event={ev} community={comm} courses={courses} players={[...players, ...(ev.guests || [])]} me={me}
-              setEvents={setEvents} rounds={rounds} onSaveRound={saveRound} onDeleteRound={deleteRound} onClose={() => setPlayEventId(null)} />
+              setEvents={setEvents} rounds={rounds} roundsStats={roundsStats} onSaveRound={saveRound} onDeleteRound={deleteRound} onClose={() => setPlayEventId(null)} />
           );
         })()}
         {view === "round" && !playEventId && !roundCommunity && !quickRound && myOpenEvents.length > 0 && (
@@ -5134,6 +5185,7 @@ export default function App() {
             courses={courses}
             communities={myCommunities}
             players={players}
+            roundsStats={roundsStats}
             me={me}
             initialEvent={roundCommunity ? { communityId: roundCommunity } : null}
             onCancel={() => { setRoundCommunity(null); setQuickRound(false); setView("home"); }}
