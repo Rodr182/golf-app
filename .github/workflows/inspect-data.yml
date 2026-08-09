@@ -32,6 +32,32 @@ jobs:
           echo "== Rondas EN CURSO (aún sin consolidar) =="
           q "select e->>'name' as nombre, e->>'date' as fecha, e->>'communityId' as comunidad, e->>'status' as estado, jsonb_array_length(e->'groups') as grupos, (select count(*) from jsonb_array_elements(e->'groups') g, jsonb_each(g->'scores') s where jsonb_typeof(s.value)='array' and exists (select 1 from jsonb_array_elements_text(s.value) v where v.value <> '')) as jugadores_con_scores from public.collections, jsonb_array_elements(value) e where key='gb_events_v1';"
 
+          echo "== DETALLE de los eventos: grupo por grupo, hoyos anotados y vacíos =="
+          # Para cada jugador de cada grupo: cuántos hoyos tiene anotados y
+          # cuáles le faltan. Sirve para ver si a alguien no se le guardó algo.
+          # OJO con el alias `c`: sin él, `key` es ambiguo entre la tabla y el lateral.
+          q "select e->>'date' as fecha, e->>'status' as estado, (g->>'id')::int as grupo,
+                    g->>'scorerId' as anotador_id, s.key as jugador_id,
+                    (g->'hcps'->>(s.key)) as hcp_del_dia,
+                    (select count(*) from jsonb_array_elements_text(s.value) v where v.value <> '' and v.value <> 'null') as hoyos_anotados,
+                    (select string_agg(t.ord::text, ',' order by t.ord)
+                       from jsonb_array_elements_text(s.value) with ordinality t(v, ord)
+                      where t.v = '' or t.v = 'null') as hoyos_vacios
+             from public.collections c, jsonb_array_elements(c.value) e,
+                  jsonb_array_elements(e->'groups') g, jsonb_each(g->'scores') s
+             where c.key='gb_events_v1'
+             order by 1 desc, 3, 5;"
+
+          echo "== Tarjetas de las fechas YA CERRADAS (para ver hándicaps y golpes raros) =="
+          q "select r->>'date' as fecha, (t->>'id')::int as grupo,
+                    p->>'name' as jugador, (p->>'hcp') as hcp,
+                    (select sum(x::int) from jsonb_array_elements_text(p->'gross') x) as gross_total,
+                    (select count(*) from jsonb_array_elements_text(p->'gross') x where x is null or x = 'null' or x = '') as hoyos_sin_golpe
+             from public.collections c, jsonb_array_elements(c.value) r,
+                  jsonb_array_elements(r->'teams') t, jsonb_array_elements(t->'players') p
+             where c.key='gb_rounds_v2'
+             order by 1 desc, 2, 3;"
+
           echo "== Comunidades =="
           q "select c->>'name' as nombre, jsonb_array_length(c->'members') as miembros from public.collections, jsonb_array_elements(value) c where key='gb_comm_v2';"
 
