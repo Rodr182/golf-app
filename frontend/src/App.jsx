@@ -729,6 +729,82 @@ function scoreCat(gross, par) {
   if (d === 2) return "double";
   return "triple";
 }
+/* ---- AUDITORÍA DE UNA FECHA ----
+   Rehace, desde la tarjeta guardada, todo lo que hace falta para revisar una
+   fecha ya consolidada: el cuadre de la plata, los golpes hoyo por hoyo con los
+   strokes que recibió cada uno, y una lista de cosas que conviene mirar.
+   No calcula plata ni modifica nada: solo lee lo que quedó guardado. */
+function auditarFecha(round, course, rondasPrevias = []) {
+  const res = (round && round.results) || {};
+  const rows = res.rows || [];
+  const rg = res.rules || {};
+  const pct = rg.rulePct ?? 100;
+  const multi = !!rg.multiStroke;
+  const si = (course && course.strokes) || [];
+  const pars = (course && course.pars) || [];
+  const r8 = rg.regla8 && (rg.regla8Holes || []).length
+    ? { holes: new Set((rg.regla8Holes || []).map((h) => h - 1)), pars } : null;
+
+  const jugadores = [];
+  (round.teams || []).forEach((t) => (t.players || []).forEach((p) => jugadores.push({ ...p, grupo: t.id, start: t.start })));
+  const adj = {}; jugadores.forEach((p) => (adj[p.id] = adjustedHcp(parseInt(p.hcp) || 0, pct)));
+  // La base del evento: el hándicap ajustado más bajo de toda la fecha. Es la
+  // misma que usa el Individual general, el concurso que juegan todos.
+  const base = jugadores.length ? Math.min(...jugadores.map((p) => adj[p.id])) : 0;
+
+  const tarjetas = jugadores.map((p) => {
+    const ph = adj[p.id] - base;
+    const gross = (p.gross || []).map((g) => (g === "" || g == null ? null : parseInt(g)));
+    const completa = gross.length === 18 && gross.every((g) => g != null && !Number.isNaN(g));
+    const net = completa && si.length ? netScores(gross, ph, si, multi, r8) : gross;
+    const strokes = si.length ? si.map((s) => strokesOnHole(effPh(ph, multi), s)) : gross.map(() => 0);
+    const fila = rows.find((r) => r.id === p.id) || {};
+    const suma = (arr, a, b) => arr.slice(a, b).reduce((s, g) => s + (g || 0), 0);
+    return {
+      id: p.id, name: p.name, grupo: p.grupo, hcp: parseInt(p.hcp) || 0, adj: adj[p.id], ph,
+      gross, net, strokes, completa, guest: !!fila.guest,
+      grossOut: suma(gross, 0, 9), grossIn: suma(gross, 9, 18), grossTotal: suma(gross, 0, 18),
+      netOut: suma(net, 0, 9), netIn: suma(net, 9, 18), netTotal: suma(net, 0, 18),
+      money: fila.totalMoney || 0, tok: fila.totalTok || 0,
+      enResultados: !!rows.find((r) => r.id === p.id),
+    };
+  });
+
+  const sumaMoney = rows.reduce((s, r) => s + (r.totalMoney || 0), 0);
+  const sumaTok = rows.reduce((s, r) => s + (r.totalTok || 0), 0);
+  // El Machetero es de suma cero: lo que pierde uno lo gana otro. Si no da cero,
+  // algo se calculó mal o la fecha quedó a medio guardar.
+  const cuadre = { money: sumaMoney, tok: sumaTok, ok: Math.abs(sumaMoney) < 0.005 && Math.abs(sumaTok) < 0.005 };
+
+  const avisos = [];
+  if (!cuadre.ok) avisos.push({ tono: "error", txt: `La plata no cuadra: suma ${sumaMoney.toFixed(2)} en vez de 0. Revísala con quien anotó.` });
+  if (!si.length) avisos.push({ tono: "error", txt: "No se encontró la cancha de esta fecha: los netos y los strokes no se pueden rehacer." });
+  tarjetas.forEach((t) => {
+    if (!t.completa) avisos.push({ tono: "error", txt: `${t.name}: la tarjeta no tiene los 18 hoyos completos.` });
+    const raros = t.gross.map((g, i) => ({ g, i })).filter((x) => x.g != null && (x.g < 1 || x.g > 12));
+    if (raros.length) avisos.push({ tono: "revisar", txt: `${t.name}: golpes poco creíbles en el hoyo ${raros.map((x) => x.i + 1).join(", ")} (${raros.map((x) => x.g).join(", ")}).` });
+    if (!t.enResultados) avisos.push({ tono: "error", txt: `${t.name} está en la tarjeta pero no en los resultados.` });
+  });
+  (round.teams || []).forEach((t) => {
+    const n = (t.players || []).length;
+    if (n < 3 || n > 5) avisos.push({ tono: "error", txt: `El grupo ${t.id} quedó con ${n} jugador${n === 1 ? "" : "es"}: el Machetero se juega de 3 a 5.` });
+    else if (n === 3) avisos.push({ tono: "info", txt: `El grupo ${t.id} jugó de 3: se le prestó un jugador de un grupo de cuatro (regla 10).` });
+  });
+  // Un hándicap que se movió mucho de una fecha a la otra suele ser un tipeo.
+  tarjetas.forEach((t) => {
+    const previas = (rondasPrevias || []).filter((r) => String(r.date || "") < String(round.date || ""));
+    const ant = ultimoHcpJugado(t.id, previas);
+    if (ant && Math.abs(ant.hcp - t.hcp) >= 4) {
+      avisos.push({ tono: "revisar", txt: `${t.name} jugó con ${t.hcp} y en su fecha anterior (${fechaCorta(ant.date)}) con ${ant.hcp}.` });
+    }
+  });
+  const invitados = tarjetas.filter((t) => t.guest);
+  if (invitados.length) avisos.push({ tono: "info", txt: `${invitados.length} invitado${invitados.length === 1 ? "" : "s"} (${invitados.map((t) => t.name).join(", ")}): juegan las cuentas del día pero no entran a la money list.` });
+
+  return { cuadre, tarjetas, avisos, base, pct, multi, pars, si,
+    regla8: r8 ? (rg.regla8Holes || []) : [], eventStart: res.eventStart || 1 };
+}
+
 function playerScoreStats(meId, rounds, courses) {
   const counts = { ace: 0, albatros: 0, eagle: 0, birdie: 0, par: 0, bogey: 0, double: 0, triple: 0 };
   let holes = 0;
@@ -1968,6 +2044,137 @@ function Results({ results, community }) {
 }
 
 /* ---------------- CÓMO SE GANÓ (PUNTOS) ---------------- */
+/* Auditoría de una fecha consolidada: es para el administrador, así que muestra
+   lo que hace falta para CONTROLAR, no para lucir. Primero si la plata cuadra,
+   después lo que conviene mirar, y al final la tarjeta de cada grupo tal como
+   quedó guardada, con los strokes de cada uno. */
+function AuditoriaFecha({ round, event, community, course, rondasPrevias }) {
+  const [abierto, setAbierto] = useState(false);
+  const a = useMemo(() => auditarFecha(round, course, rondasPrevias), [round, course, rondasPrevias]);
+  const cur = community.currency || "S/.";
+  const grupos = [...new Set(a.tarjetas.map((t) => t.grupo))];
+  const TONOS = { error: ["#b4452f", "rgba(180,69,47,.08)", "⚠️"], revisar: [C.gold, "rgba(212,168,67,.14)", "👀"], info: ["#5c6b63", C.cream, "ℹ️"] };
+  const problemas = a.avisos.filter((x) => x.tono !== "info").length;
+
+  const celda = { textAlign: "center", padding: "4px 0", fontSize: 12 };
+  const cabecera = { ...celda, fontWeight: 700, color: "#7a8780", fontSize: 11 };
+
+  return (
+    <Card style={{ padding: 16, marginBottom: 14, border: `1.5px solid ${a.cuadre.ok && !problemas ? C.line : C.gold}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.green }}>🔍 Auditoría de la fecha</div>
+          <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 2 }}>
+            {a.cuadre.ok ? "La plata cuadra en 0." : `⚠️ La plata NO cuadra: ${money(a.cuadre.money, cur)}.`}
+            {problemas > 0 && ` · ${problemas} cosa${problemas === 1 ? "" : "s"} para revisar.`}
+            {problemas === 0 && a.cuadre.ok && " Sin nada raro."}
+          </div>
+        </div>
+        <Btn variant="ghost" onClick={() => setAbierto(!abierto)}>{abierto ? "Ocultar ▲" : "Ver el detalle ▼"}</Btn>
+      </div>
+
+      {abierto && (
+        <div style={{ marginTop: 14 }}>
+          {/* con qué reglas se calculó y quién la cerró */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            <Chip tone="green">Hándicap al {a.pct}%</Chip>
+            <Chip tone="neutral">Base de la fecha: {a.base}</Chip>
+            <Chip tone="neutral">Salida hoyo {a.eventStart}</Chip>
+            {a.multi && <Chip tone="neutral">Más de 1 stroke por hoyo</Chip>}
+            {a.regla8.length > 0 && <Chip tone="gold">Regla 8 en {a.regla8.join(", ")}</Chip>}
+            <Chip tone="neutral">Token {cur}{(round.results.tokenValue || 0).toFixed(2)}</Chip>
+            {event && event.correcciones > 0 && <Chip tone="gold">Corregida {event.correcciones} {event.correcciones === 1 ? "vez" : "veces"}</Chip>}
+          </div>
+
+          {a.avisos.length > 0 && (
+            <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+              {a.avisos.map((v, i) => {
+                const [color, fondo, icono] = TONOS[v.tono] || TONOS.info;
+                return (
+                  <div key={i} style={{ background: fondo, color, borderRadius: 10, padding: "8px 11px", fontSize: 12.5, fontWeight: v.tono === "info" ? 500 : 700, lineHeight: 1.45 }}>
+                    {icono} {v.txt}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {grupos.map((gid) => {
+            const dentro = a.tarjetas.filter((t) => t.grupo === gid);
+            return (
+              <div key={gid} style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5, color: C.green, marginBottom: 6 }}>Grupo {gid}</div>
+                <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 12 }}>
+                  <div style={{ minWidth: 640, display: "grid", gridTemplateColumns: `130px repeat(9, 26px) 34px repeat(9, 26px) 34px 40px` }}>
+                    <div style={{ ...cabecera, textAlign: "left", paddingLeft: 9 }}>Hoyo</div>
+                    {Array.from({ length: 9 }, (_, i) => <div key={i} style={cabecera}>{i + 1}</div>)}
+                    <div style={{ ...cabecera, color: C.green }}>Out</div>
+                    {Array.from({ length: 9 }, (_, i) => <div key={i + 9} style={cabecera}>{i + 10}</div>)}
+                    <div style={{ ...cabecera, color: C.green }}>In</div>
+                    <div style={{ ...cabecera, color: C.green }}>Tot</div>
+
+                    <div style={{ ...cabecera, textAlign: "left", paddingLeft: 9, background: C.cream }}>Par</div>
+                    {a.pars.slice(0, 9).map((p, i) => <div key={i} style={{ ...celda, background: C.cream, color: "#7a8780" }}>{p}</div>)}
+                    <div style={{ ...celda, background: C.cream, color: "#7a8780", fontWeight: 700 }}>{a.pars.slice(0, 9).reduce((s, p) => s + p, 0)}</div>
+                    {a.pars.slice(9).map((p, i) => <div key={i + 9} style={{ ...celda, background: C.cream, color: "#7a8780" }}>{p}</div>)}
+                    <div style={{ ...celda, background: C.cream, color: "#7a8780", fontWeight: 700 }}>{a.pars.slice(9).reduce((s, p) => s + p, 0)}</div>
+                    <div style={{ ...celda, background: C.cream, color: "#7a8780", fontWeight: 700 }}>{a.pars.reduce((s, p) => s + p, 0)}</div>
+
+                    {dentro.map((t) => (
+                      <React.Fragment key={t.id}>
+                        {/* golpes: el punto marca los strokes que recibe en ese hoyo */}
+                        <div style={{ padding: "6px 9px", borderTop: `1px solid ${C.line}` }}>
+                          <div style={{ fontWeight: 700, fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {t.name} {t.guest && <span style={{ color: C.gold, fontSize: 10 }}>inv.</span>}
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "#7a8780" }}>
+                            hcp {t.hcp} · aj. {t.adj} · {t.ph} str · <b style={{ color: t.money >= 0 ? C.green : C.red }}>{money(t.money, cur)}</b>
+                          </div>
+                        </div>
+                        {t.gross.map((g, h) => (
+                          <React.Fragment key={h}>
+                            <div style={{ ...celda, borderTop: `1px solid ${C.line}`, fontWeight: 700, position: "relative",
+                              color: g == null ? C.red : g < a.pars[h] ? "#3fa46a" : g > a.pars[h] ? C.red : C.ink }}>
+                              {g == null ? "·" : g}
+                              {t.strokes[h] > 0 && <span style={{ color: C.gold, fontSize: 9 }}>{"•".repeat(Math.min(t.strokes[h], 2))}</span>}
+                            </div>
+                            {h === 8 && <div style={{ ...celda, borderTop: `1px solid ${C.line}`, fontWeight: 800, background: C.cream }}>{t.grossOut}</div>}
+                            {h === 17 && <>
+                              <div style={{ ...celda, borderTop: `1px solid ${C.line}`, fontWeight: 800, background: C.cream }}>{t.grossIn}</div>
+                              <div style={{ ...celda, borderTop: `1px solid ${C.line}`, fontWeight: 800, background: C.cream, fontFamily: "'Fraunces'" }}>{t.grossTotal}</div>
+                            </>}
+                          </React.Fragment>
+                        ))}
+                        {/* netos: los mismos golpes menos los strokes */}
+                        <div style={{ padding: "2px 9px 7px", fontSize: 10.5, color: "#7a8780" }}>neto de la fecha</div>
+                        {t.net.map((n, h) => (
+                          <React.Fragment key={"n" + h}>
+                            <div style={{ ...celda, fontSize: 10.5, color: "#9aa69e", paddingBottom: 7 }}>{n == null ? "·" : n}</div>
+                            {h === 8 && <div style={{ ...celda, fontSize: 10.5, color: C.green, fontWeight: 700, background: C.cream, paddingBottom: 7 }}>{t.netOut}</div>}
+                            {h === 17 && <>
+                              <div style={{ ...celda, fontSize: 10.5, color: C.green, fontWeight: 700, background: C.cream, paddingBottom: 7 }}>{t.netIn}</div>
+                              <div style={{ ...celda, fontSize: 11, color: C.green, fontWeight: 800, background: C.cream, paddingBottom: 7 }}>{t.netTotal}</div>
+                            </>}
+                          </React.Fragment>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          <div style={{ fontSize: 11.5, color: "#7a8780", lineHeight: 1.5 }}>
+            Los golpes son los que quedaron guardados. El punto dorado marca los strokes que recibe ese jugador en el hoyo,
+            y la línea gris de abajo es el neto con el que se jugaron los concursos de toda la fecha (base {a.base}).
+            Los concursos internos de cada grupo usan la base del grupo, así que ahí los netos pueden ser otros.
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function PointsBreakdown({ breakdown }) {
   const [open, setOpen] = useState({});
   if (!breakdown || !breakdown.length) return null;
@@ -3742,6 +3949,10 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             <Btn variant="ghost" onClick={reabrir}>↩︎ Reabrir para corregir</Btn>
           </div>
         </Card>
+      )}
+      {admin && roundSaved && !roundSaved.results.simple && (
+        <AuditoriaFecha round={roundSaved} event={event} community={community} course={course}
+          rondasPrevias={tarjetas.filter((r) => r.communityId === community.id)} />
       )}
       {roundSaved && (
         <>
