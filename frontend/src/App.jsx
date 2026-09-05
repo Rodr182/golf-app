@@ -3238,6 +3238,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   // Puede escribir el anotador designado. El admin NO escribe por encima de
   // él: si hace falta, primero se pone como anotador (un clic). La excepción
   // es un grupo sin anotador válido, para que la ronda no quede trabada.
+  /* Quien puede anotar, anota, sin importar por dónde entró a la fecha. Antes
+     se exigía además haber llegado por "Iniciar Ronda": si el anotador abría su
+     fecha desde Comunidad → Eventos → Gestionar, veía la tarjeta pero no podía
+     escribir, sin ninguna explicación. El permiso lo da esta función, no la
+     puerta por la que se entró. */
   const puedeAnotar = (g) => g.scorerId === me.id || (admin && !anotadorValido(g));
   // Agrega un invitado: entra al evento (inscrito) pero se marca como invitado
   // para NO contar en la money list acumulada (solo en las cuentas del día).
@@ -3622,7 +3627,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
     if (g) {
       // Escribe SOLO el anotador designado. Todos los demás —incluidos los
       // administradores— ven la tarjeta en vivo en modo lectura.
-      const canEdit = mode === "play" && puedeAnotar(g);
+      const canEdit = puedeAnotar(g);
       // el orden sorteado define las parejas del resumen interno
       const playerList = groupOrder(g).map((pid) => ({ id: pid, name: resolveName(pid, players), hcp: g.hcps[pid] }));
       return (
@@ -3741,7 +3746,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
           {/* Al terminar una tarjeta se puede saltar directo a la siguiente que
               me toque anotar, sin volver a la lista de grupos. */}
           {(() => {
-            const míos = groups.filter((x) => mode === "play" && puedeAnotar(x));
+            const míos = groups.filter((x) => puedeAnotar(x));
             const pendiente = míos.find((x) => x.id !== g.id && !groupFilled(x));
             return (
               <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14, gap: 10, flexWrap: "wrap" }}>
@@ -3796,7 +3801,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             // afectan las cuentas: los hace el anotador del grupo o un
             // administrador de la comunidad, no cualquiera del grupo.
             const canDraw = admin || g.scorerId === me.id;
-            const iScore = mode === "play" && puedeAnotar(g);
+            const iScore = puedeAnotar(g);
             // El anotador se puede cambiar durante el juego: lo hace el admin
             // o el propio anotador (para pasarle la posta a otro del grupo).
             const puedeCambiarAnotador = admin || g.scorerId === me.id;
