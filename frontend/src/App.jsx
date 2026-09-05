@@ -3354,6 +3354,29 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   const groupFilled = (g) => g.playerIds.length >= minPorGrupo && g.playerIds.every((pid) => (g.scores[pid] || []).length === 18 && g.scores[pid].every((s) => s !== "" && s != null));
   const allGroupsReady = groups.length >= 1 && groups.every((g) => g.playerIds.length >= minPorGrupo && g.scorerId);
   const allScored = groups.length >= 1 && groups.every(groupFilled);
+  /* Qué le falta a la fecha para poder consolidar. Antes el botón simplemente
+     quedaba apagado: en la cancha, con el grupo esperando, no había manera de
+     saber a qué jugador le faltaba qué hoyo. */
+  const loQueFalta = () => {
+    const out = [];
+    if (!groups.length) { out.push({ grupo: null, txt: "todavía no hay grupos armados" }); return out; }
+    groups.forEach((g) => {
+      if (g.playerIds.length < minPorGrupo) {
+        out.push({ grupo: g.id, txt: `quedó con ${g.playerIds.length} jugador${g.playerIds.length === 1 ? "" : "es"} y el mínimo es ${minPorGrupo}` });
+        return;
+      }
+      g.playerIds.forEach((pid) => {
+        const sc = g.scores[pid] || [];
+        const faltan = [];
+        for (let h = 0; h < 18; h++) if (sc[h] === "" || sc[h] == null) faltan.push(h + 1);
+        if (!faltan.length) return;
+        out.push({ grupo: g.id, txt: faltan.length === 18
+          ? `${resolveName(pid, players)} no tiene ningún hoyo anotado`
+          : `${resolveName(pid, players)}: falta${faltan.length === 1 ? "" : "n"} el hoyo ${faltan.join(", ")}` });
+      });
+    });
+    return out;
+  };
 
   // El jugador prestado (grupos de 3) se decide recién al consolidar, con
   // todos los scores ya ingresados: llega en `choices` como {groupId: playerId}.
@@ -3909,6 +3932,11 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
               <Btn variant="ghost" onClick={() => setLoanStep(false)}>Cancelar</Btn>
               <Btn variant="gold" disabled={!allLoansChosen} onClick={() => { setLoanStep(false); consolidate(loanChoices); }}>Confirmar y consolidar →</Btn>
             </div>
+            {!allLoansChosen && (
+              <div style={{ fontSize: 12.5, color: C.gold, fontWeight: 700, marginTop: 8 }}>
+                Falta elegir el prestado {threeGroups.filter((x) => !loanChoices[x.id]).map((x) => `del Grupo ${x.id}`).join(" y ")}.
+              </div>
+            )}
           </Card>
         )}
 
@@ -3922,13 +3950,36 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             </Btn>
           </div>
         )}
-        {!allScored && (
-          <div style={{ color: "#7a8780", fontSize: 13, marginTop: 8 }}>
-            {event.quick
-              ? "Cuando todas las tarjetas estén completas se calculan los resultados. Mientras tanto puedes salir: lo anotado queda guardado."
-              : "Cuando todos los grupos estén completos, el admin consolida el evento."}
-          </div>
-        )}
+        {!allScored && (() => {
+          const faltan = loQueFalta();
+          return (
+            <div style={{ marginTop: 10 }}>
+              {faltan.length > 0 && (
+                <Card style={{ padding: 14, border: `1.5px solid ${C.gold}`, marginBottom: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, color: C.green, marginBottom: 7 }}>
+                    Falta esto para poder consolidar
+                  </div>
+                  <div style={{ display: "grid", gap: 5 }}>
+                    {faltan.map((f, i) => (
+                      <div key={i} style={{ fontSize: 12.5, color: "#5c6b63", lineHeight: 1.45 }}>
+                        {f.grupo != null && <b style={{ color: C.green }}>Grupo {f.grupo}</b>}{f.grupo != null && " · "}{f.txt}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#7a8780", marginTop: 9, lineHeight: 1.5 }}>
+                    Lo completa el anotador de ese grupo. Si esa persona ya se fue, un administrador puede
+                    ponerse como anotador del grupo y terminar la tarjeta.
+                  </div>
+                </Card>
+              )}
+              <div style={{ color: "#7a8780", fontSize: 13 }}>
+                {event.quick
+                  ? "Cuando todas las tarjetas estén completas se calculan los resultados. Mientras tanto puedes salir: lo anotado queda guardado."
+                  : "Cuando todos los grupos estén completos, el admin consolida el evento."}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   }
