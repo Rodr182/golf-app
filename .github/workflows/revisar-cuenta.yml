@@ -34,7 +34,21 @@ jobs:
           case "$EMAIL" in *'$mail$'*) echo "ERROR: email inválido"; exit 1;; esac
 
           api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
-          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          # Si el token caducó o perdió permisos, la API devuelve un error en vez
+          # de la lista de proyectos. Antes eso reventaba con un error de jq sin
+          # explicar nada; ahora se dice qué contestó.
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 500)"
+            echo ""
+            echo "Lo más probable es que el token guardado en el secreto SUPABASE_TOKEN"
+            echo "haya caducado. Se renueva en Supabase → Account → Access Tokens, y se"
+            echo "reemplaza en GitHub → Settings → Secrets → Actions → SUPABASE_TOKEN."
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          [ -n "$ref" ] && [ "$ref" != "null" ] || { echo "ERROR: no se encontró el proyecto"; exit 1; }
           q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; echo ""; }
 
           echo "== La cuenta =="
