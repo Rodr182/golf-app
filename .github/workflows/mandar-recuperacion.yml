@@ -1,0 +1,86 @@
+# Manda el correo de recuperación de contraseña a alguien que no puede entrar,
+# y dice QUÉ contestó el servidor.
+#
+# Hace exactamente lo mismo que el botón "¿Olvidaste tu contraseña?" de la app,
+# pero enseñando la respuesta: así se distingue "se mandó" de "se pasó el tope
+# de correos por hora" o "el envío está mal configurado". En la app no se puede
+# ver, porque a propósito siempre responde lo mismo (decir si un email tiene
+# cuenta permitiría averiguar quién está registrado).
+#
+# NO necesita el token de administrador: usa la clave pública de la app, la
+# misma que lleva cualquiera que abra la página.
+name: Mandar correo de recuperación
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email de la persona que no puede entrar"
+        required: true
+
+permissions: {}
+
+jobs:
+  recuperar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mandar el enlace
+        env:
+          EMAIL: ${{ inputs.email }}
+        run: |
+          set -euo pipefail
+          url=$(grep -o 'https://[a-z0-9]*\.supabase\.co' frontend/src/config.js | head -1)
+          key=$(grep -o 'eyJ[A-Za-z0-9._-]*' frontend/src/config.js | head -1)
+          [ -n "$url" ] && [ -n "$key" ] || { echo "ERROR: no encontré la configuración de Supabase"; exit 1; }
+          echo "Proyecto: $url"
+          echo ""
+
+          echo "== Cómo está configurada la entrada a la app =="
+          curl -sS -m 30 "$url/auth/v1/settings" -H "apikey: $key" \
+            | jq '{
+                entrar_con_email: .external.email,
+                pide_confirmar_el_email: (.mailer_autoconfirm | not),
+                permite_registrarse: (.disable_signup | not)
+              }'
+          echo ""
+
+          # A dónde vuelve el enlace del correo: la app manda su propia dirección.
+          volver="https://rodr182.github.io/golf-app/"
+          echo "== Mandando el correo a $EMAIL =="
+          echo "   (el enlace lo va a traer de vuelta a $volver)"
+          cuerpo=$(jq -n --arg e "$EMAIL" '{email: $e}')
+          http=$(curl -sS -m 30 -o /tmp/resp.json -w '%{http_code}' \
+            -X POST "$url/auth/v1/recover?redirect_to=$volver" \
+            -H "apikey: $key" -H "Content-Type: application/json" \
+            -d "$cuerpo")
+          echo "Respuesta del servidor: HTTP $http"
+          echo "Detalle: $(cat /tmp/resp.json)"
+          echo ""
+
+          case "$http" in
+            200|204)
+              echo "✅ El servidor ACEPTÓ mandar el correo."
+              echo ""
+              echo "Si aun así no le llega, ya no es la app: es el correo que no está"
+              echo "entrando. Qué revisar, en este orden:"
+              echo "  1. La carpeta de correo no deseado / spam. Con Hotmail y Outlook"
+              echo "     pasa casi siempre, porque el remitente es el de cortesía de"
+              echo "     Supabase y esos proveedores no confían en él."
+              echo "  2. Que el email esté bien escrito (que sea el mismo con el que"
+              echo "     se registró)."
+              echo "  3. El enlace vence a la hora; si lo abre tarde, hay que pedir otro."
+              ;;
+            429)
+              echo "⛔ TOPE DE CORREOS ALCANZADO."
+              echo ""
+              echo "El remitente de cortesía de Supabase deja mandar muy pocos correos"
+              echo "por hora, y el tope es de TODO el proyecto, no de cada persona."
+              echo "Hay que esperar una hora y volver a intentar; o configurar un"
+              echo "remitente propio (SMTP), que es la solución de fondo."
+              ;;
+            *)
+              echo "⚠️ El servidor RECHAZÓ el envío. El detalle de arriba dice por qué."
+              ;;
+          esac
