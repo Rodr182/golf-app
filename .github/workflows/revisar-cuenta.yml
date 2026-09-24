@@ -1,0 +1,86 @@
+# Revisa el estado de UNA cuenta cuando alguien no puede entrar.
+#
+# Es de solo lectura y no muestra nunca la contraseña: en la base no está
+# guardada, solo queda un resumen irreversible de ella (un "hash"), así que
+# nadie —ni el administrador— puede leerla.
+#
+# Lo que sí dice: si la cuenta existe, si confirmó su correo, cuándo entró por
+# última vez y cuándo se le mandó el último correo de recuperación. Con eso se
+# distingue "nunca pidió el correo" de "se le mandó y no le llegó".
+name: Revisar una cuenta
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email de la persona que no puede entrar"
+        required: true
+
+permissions: {}
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Estado de la cuenta
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          EMAIL: ${{ inputs.email }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          # El email se mete en el SQL con "dollar quoting" ($mail$…$mail$): así
+          # no hay que escapar comillas y no se puede colar nada raro.
+          case "$EMAIL" in *'$mail$'*) echo "ERROR: email inválido"; exit 1;; esac
+
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          ref=$(api https://api.supabase.com/v1/projects | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; echo ""; }
+
+          echo "== La cuenta =="
+          # Se eligen las columnas a mano: la del hash de la contraseña NO se pide.
+          resp=$(q "select email,
+                           created_at,
+                           email_confirmed_at,
+                           last_sign_in_at,
+                           recovery_sent_at,
+                           confirmation_sent_at,
+                           banned_until,
+                           deleted_at
+                    from auth.users
+                    where lower(email) = lower(\$mail\$${EMAIL}\$mail\$);")
+          echo "$resp"
+          echo "$resp" | jq -e 'if type=="object" and (has("message") or has("error")) then false else true end' > /dev/null \
+            || { echo "ERROR de la base"; exit 1; }
+          echo "$resp" | jq -e 'length > 0' > /dev/null \
+            || echo ">> No existe ninguna cuenta con ese email. Puede estar escrito distinto: revisa el listado de abajo."
+
+          echo ""
+          echo "== Emails parecidos (por si se registró con otro) =="
+          usuario=$(printf '%s' "$EMAIL" | cut -d@ -f1)
+          case "$usuario" in *'$u$'*) usuario="";; esac
+          q "select email, created_at from auth.users
+             where email ilike '%' || \$u\$${usuario}\$u\$ || '%' order by created_at;"
+
+          echo ""
+          echo "== Cómo manda los correos el proyecto =="
+          # Si no hay SMTP propio, Supabase usa su remitente de cortesía: tiene un
+          # tope bajo de correos por hora y varios proveedores (Hotmail y Outlook
+          # sobre todo) lo mandan a spam o lo rechazan.
+          api "https://api.supabase.com/v1/projects/$ref/config/auth" \
+            | jq '{
+                smtp_propio: (if (.smtp_host // "") == "" then "NO — usa el remitente de cortesía de Supabase" else .smtp_host end),
+                smtp_remitente: (.smtp_admin_email // "(ninguno)"),
+                tope_correos_por_hora: .rate_limit_email_sent,
+                recuperacion_habilitada: (.external_email_enabled // true),
+                pide_confirmar_email: .mailer_autoconfirm,
+                minutos_de_validez_del_enlace: ((.mailer_otp_exp // 0) / 60)
+              }'
+
+          echo ""
+          echo "== A dónde puede volver el enlace del correo =="
+          api "https://api.supabase.com/v1/projects/$ref/config/auth" \
+            | jq '{ site_url: .site_url, redirecciones_permitidas: .uri_allow_list }'
+          echo ""
+          echo "La contraseña no se puede mostrar: la base solo guarda un resumen"
+          echo "irreversible de ella. Para volver a entrar hay que ponerle una nueva."
