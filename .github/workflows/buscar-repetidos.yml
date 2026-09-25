@@ -53,27 +53,27 @@ jobs:
                    lower(trim(regexp_replace(coalesce(p->>'name','') || ' ' || coalesce(p->>'last',''), '\\s+', ' ', 'g'))) as nombre,
                    trim(coalesce(p->>'name','') || ' ' || coalesce(p->>'last','')) as nombre_visible,
                    p->>'email' as email
-            from public.collections, jsonb_array_elements(value) p where key='gb_players_v2'
+            from public.collections c0, jsonb_array_elements(c0.value) p where c0.key='gb_players_v2'
           ),
           fechas as (
             select row->>'id' as id,
                    count(*) as fechas_jugadas,
                    round(sum((row->>'totalMoney')::numeric)) as soles
-            from public.collections, jsonb_array_elements(value) r, jsonb_array_elements(r->'results'->'rows') row
-            where key='gb_rounds_v2' group by 1
+            from public.collections c1, jsonb_array_elements(c1.value) r, jsonb_array_elements(r->'results'->'rows') row
+            where c1.key='gb_rounds_v2' group by 1
           ),
           miembros as (
             select m as id, c->>'name' as comunidad
-            from public.collections, jsonb_array_elements(value) c,
+            from public.collections c2, jsonb_array_elements(c2.value) c,
                  jsonb_array_elements_text(coalesce(c->'members','[]'::jsonb)) m
-            where key='gb_comm_v2'
+            where c2.key='gb_comm_v2'
           ),
           historico as (
             select h.key as id, (h.value->>'fechas')::int as fechas_previas
-            from public.collections, jsonb_array_elements(value) c,
+            from public.collections c3, jsonb_array_elements(c3.value) c,
                  jsonb_each(coalesce(c->'historico','{}'::jsonb)) t(temp, datos),
                  jsonb_each(coalesce(datos->'jugadores','{}'::jsonb)) h
-            where key='gb_comm_v2'
+            where c3.key='gb_comm_v2'
           )
           select j.nombre_visible, j.email, j.id,
                  coalesce(string_agg(distinct m.comunidad, ', '), '(en ninguna)') as comunidades,
@@ -99,7 +99,7 @@ jobs:
           echo "== Personas con MÁS DE UNA cuenta =="
           q "$ficha where j.nombre in (
                select lower(trim(regexp_replace(coalesce(p->>'name','') || ' ' || coalesce(p->>'last',''), '\\s+', ' ', 'g')))
-               from public.collections, jsonb_array_elements(value) p where key='gb_players_v2'
+               from public.collections c4, jsonb_array_elements(c4.value) p where c4.key='gb_players_v2'
                group by 1 having count(*) > 1)
              group by j.nombre_visible, j.email, j.id, u.created_at, u.last_sign_in_at
              order by j.nombre_visible, u.created_at;"
