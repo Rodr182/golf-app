@@ -445,9 +445,23 @@ const SEED_COURSES = [
 ];
 
 /* Resuelve el nombre legible de un id de miembro/participante */
+/* Nombre para mostrar. Dos personas distintas se pueden llamar igual —un padre
+   y un hijo, sin ir más lejos—, y verlos idénticos en una lista lleva a
+   confundirlos o a borrar al que no era. Cuando el nombre y el primer apellido
+   coinciden con los de otro, se suma el segundo apellido. Si alguno no lo tiene
+   cargado, se marca con la parte de su correo: feo, pero mejor que dos filas
+   iguales, y se nota que falta completar el dato. */
 function resolveName(id, players) {
-  const u = players.find((p) => p.id === id);
-  if (u) return (u.name + (u.last ? " " + u.last : "")).trim();
+  const lista = players || [];
+  const u = lista.find((p) => p.id === id);
+  if (u) {
+    const base = (u.name + (u.last ? " " + u.last : "")).trim();
+    const mismo = (p) => (p.name + (p.last ? " " + p.last : "")).trim().toLowerCase() === base.toLowerCase();
+    if (!lista.some((p) => p.id !== id && mismo(p))) return base;
+    if (u.last2 && String(u.last2).trim()) return `${base} ${String(u.last2).trim()}`;
+    const pista = String(u.email || "").split("@")[0];
+    return pista ? `${base} (${pista})` : `${base} (${String(id).slice(0, 4)})`;
+  }
   const m = /^P(\d+)$/.exec(id);
   if (m) return "Player " + m[1];
   return id;
@@ -472,7 +486,8 @@ function nombresCortos(ids, players) {
     etiqueta[id] = cuantos[pila[id]] <= 1 ? pila[id]
       : (apellido[id] ? `${pila[id]} ${apellido[id].split(" ")[0]}` : completo[id]);
   });
-  // si dos siguen chocando (mismo nombre y primer apellido), se usa el completo
+  // Si dos siguen chocando (mismo nombre y primer apellido) se usa el completo,
+  // que ya trae el segundo apellido justamente para estos casos.
   const rep = {};
   Object.values(etiqueta).forEach((n) => (rep[n] = (rep[n] || 0) + 1));
   (ids || []).forEach((id) => { if (rep[etiqueta[id]] > 1) etiqueta[id] = completo[id]; });
@@ -1260,6 +1275,7 @@ function ensureCloudPlayer(user, players, setPlayers) {
     id: user.id,
     name: meta.name || (user.email || "").split("@")[0],
     last: meta.last || "",
+    last2: meta.last2 || "",
     email: user.email,
     birth: meta.birth || "",
     ...(meta.hcp == null ? {} : { hcp: meta.hcp }),
@@ -1453,7 +1469,7 @@ function NuevaPassword({ onListo }) {
 
 function Auth({ onAuth, players, setPlayers }) {
   const [mode, setMode] = useState("login");   // login | signup | recuperar
-  const [f, setF] = useState({ name: "", last: "", email: "", birth: "", pass: "", pass2: "", hcp: "" });
+  const [f, setF] = useState({ name: "", last: "", last2: "", email: "", birth: "", pass: "", pass2: "", hcp: "" });
   const [err, setErr] = useState("");
   const [aviso, setAviso] = useState("");      // mensaje verde (recuperación enviada)
   const [enviando, setEnviando] = useState(false);
@@ -1494,7 +1510,7 @@ function Auth({ onAuth, players, setPlayers }) {
           if (!f.name || !f.email || !f.pass) { setErr("Completa los campos obligatorios."); return; }
           if (f.pass !== f.pass2) { setErr("Las contraseñas no coinciden."); return; }
           if (f.pass.length < 6) { setErr("La contraseña debe tener al menos 6 caracteres."); return; }
-          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.pass, options: { data: { name: f.name, last: f.last, birth: f.birth, hcp: f.hcp === "" ? null : parseInt(f.hcp) } } });
+          const { data, error } = await sb.auth.signUp({ email: f.email, password: f.pass, options: { data: { name: f.name, last: f.last, last2: f.last2, birth: f.birth, hcp: f.hcp === "" ? null : parseInt(f.hcp) } } });
           if (error) { setErr(/already|registered/i.test(error.message) ? "Ese email ya está registrado." : "No se pudo crear la cuenta: " + error.message); return; }
           if (!data.session) { setErr("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión."); return; }
           onAuth({ cloudUser: data.user });
@@ -1511,7 +1527,7 @@ function Auth({ onAuth, players, setPlayers }) {
       if (!f.name || !f.email || !f.pass) { setErr("Completa los campos obligatorios."); return; }
       if (f.pass !== f.pass2) { setErr("Las contraseñas no coinciden."); return; }
       if (players.some((p) => p.email && p.email.toLowerCase() === f.email.toLowerCase())) { setErr("Ese email ya está registrado."); return; }
-      const u = { id: "U" + Date.now(), name: f.name, last: f.last, email: f.email, birth: f.birth, pass: f.pass, communities: [], ...(f.hcp === "" ? {} : { hcp: parseInt(f.hcp) }) };
+      const u = { id: "U" + Date.now(), name: f.name, last: f.last, last2: f.last2, email: f.email, birth: f.birth, pass: f.pass, communities: [], ...(f.hcp === "" ? {} : { hcp: parseInt(f.hcp) }) };
       const next = [...players, u]; setPlayers(next); onAuth(u);
     }
   };
@@ -1558,10 +1574,18 @@ function Auth({ onAuth, players, setPlayers }) {
             </div>
           )}
           {mode === "signup" && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Field label="Nombre*"><input style={inputStyle} value={f.name} onChange={upd("name")} /></Field>
-              <Field label="Apellido"><input style={inputStyle} value={f.last} onChange={upd("last")} /></Field>
-            </div>
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="Nombre*"><input style={inputStyle} value={f.name} onChange={upd("name")} /></Field>
+                <Field label="Apellido"><input style={inputStyle} value={f.last} onChange={upd("last")} /></Field>
+              </div>
+              {/* En un grupo de amigos es normal que haya dos con el mismo nombre
+                  y apellido (un padre y un hijo). El segundo apellido es lo que
+                  permite distinguirlos en las listas. */}
+              <Field label="Segundo apellido" hint="Ayuda a no confundirte con otro que se llame igual">
+                <input style={inputStyle} value={f.last2} onChange={upd("last2")} />
+              </Field>
+            </>
           )}
           {mode !== "recuperar" && (
           <>
@@ -2740,14 +2764,14 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
   const [openCardIdx, setOpenCardIdx] = useState(null);
   const [holeCourse, setHoleCourse] = useState(null);
   const [editing, setEditing] = useState(false);
-  const [f, setF] = useState({ name: me.name || "", last: me.last || "", birth: me.birth || "", hcp: me.hcp ?? "" });
+  const [f, setF] = useState({ name: me.name || "", last: me.last || "", last2: me.last2 || "", birth: me.birth || "", hcp: me.hcp ?? "" });
   const [msg, setMsg] = useState("");
   const [pw, setPw] = useState({ a: "", b: "" });
   const [pwMsg, setPwMsg] = useState("");
-  const openEdit = () => { setF({ name: me.name || "", last: me.last || "", birth: me.birth || "", hcp: me.hcp ?? "" }); setMsg(""); setEditing(true); };
+  const openEdit = () => { setF({ name: me.name || "", last: me.last || "", last2: me.last2 || "", birth: me.birth || "", hcp: me.hcp ?? "" }); setMsg(""); setEditing(true); };
   const save = async () => {
     if (!f.name.trim()) { setMsg("El nombre no puede quedar vacío."); return; }
-    await onSaveProfile({ name: f.name.trim(), last: f.last.trim(), birth: f.birth, hcp: f.hcp === "" ? undefined : parseInt(f.hcp) });
+    await onSaveProfile({ name: f.name.trim(), last: f.last.trim(), last2: f.last2.trim(), birth: f.birth, hcp: f.hcp === "" ? undefined : parseInt(f.hcp) });
     setEditing(false);
   };
   const savePassword = async () => {
@@ -2806,6 +2830,9 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
             <Field label="Nombre*"><input style={inputStyle} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
             <Field label="Apellido"><input style={inputStyle} value={f.last} onChange={(e) => setF({ ...f, last: e.target.value })} /></Field>
           </div>
+          <Field label="Segundo apellido" hint="Si alguien más se llama igual que tú, esto es lo que los diferencia">
+            <input style={inputStyle} value={f.last2} onChange={(e) => setF({ ...f, last2: e.target.value })} />
+          </Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Fecha de nacimiento"><input style={dateStyle} type="date" value={f.birth} onChange={(e) => setF({ ...f, birth: e.target.value })} /></Field>
             <Field label="Hándicap actual" hint="Si eres hándicap positivo (+2), escríbelo como −2"><input style={inputStyle} type="number" step="1" value={f.hcp} onChange={(e) => setF({ ...f, hcp: e.target.value })} placeholder="ej. 12 · +2 se escribe -2" /></Field>
@@ -5158,7 +5185,7 @@ export default function App() {
     const updated = { ...me, ...clean, _rev: (me._rev || 0) + 1 };
     setMe(updated);
     setPlayers((prev) => (prev.some((p) => p.id === updated.id) ? prev.map((p) => (p.id === updated.id ? updated : p)) : [...prev, updated]));
-    if (CLOUD) { try { await sb.auth.updateUser({ data: { name: updated.name, last: updated.last, birth: updated.birth } }); } catch {} }
+    if (CLOUD) { try { await sb.auth.updateUser({ data: { name: updated.name, last: updated.last, last2: updated.last2, birth: updated.birth } }); } catch {} }
   };
   const changePassword = CLOUD ? async (password) => {
     const { error } = await sb.auth.updateUser({ password });
