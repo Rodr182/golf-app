@@ -1,0 +1,84 @@
+# ¿La app va a seguir funcionando? Revisa lo que la puede dejar caída.
+#
+# Solo lectura. Mira tres cosas:
+#   1. El estado del proyecto en Supabase (si está activo o pausado) y su plan.
+#      En el plan gratuito, un proyecto sin actividad se PAUSA solo y la app deja
+#      de funcionar hasta que alguien lo despierta a mano.
+#   2. Cuánto pesa la base contra el tope del plan.
+#   3. Cuánto han crecido los datos y cuándo se escribió cada cosa por última vez.
+name: Revisar la salud del servicio
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"   # lunes 07:00 UTC (02:00 en Lima)
+
+permissions: {}
+
+jobs:
+  salud:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Estado del servicio
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            echo "Suele ser el token: se renueva en Supabase -> Account -> Access Tokens"
+            echo "y se reemplaza en GitHub -> Settings -> Secrets -> Actions -> SUPABASE_TOKEN."
+            exit 1
+          fi
+          proyecto=$(echo "$proyectos" | jq '[.[] | select(.name | test("machetero|golf"; "i"))][0] // .[0]')
+          ref=$(echo "$proyecto" | jq -r '.id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; echo ""; }
+
+          echo "== El proyecto =="
+          echo "$proyecto" | jq '{ nombre: .name, estado: .status, region: .region, creado: .created_at }'
+          estado=$(echo "$proyecto" | jq -r '.status')
+          if [ "$estado" != "ACTIVE_HEALTHY" ]; then
+            echo ""
+            echo "⚠️ EL PROYECTO NO ESTÁ SANO (estado: $estado)."
+            echo "   Si dice PAUSED o INACTIVE, la app NO funciona para nadie."
+            echo "   Se despierta desde supabase.com, entrando al proyecto."
+          fi
+
+          echo ""
+          echo "== El plan (de él dependen los topes) =="
+          org=$(echo "$proyecto" | jq -r '.organization_id // empty')
+          if [ -n "$org" ]; then
+            api "https://api.supabase.com/v1/organizations" \
+              | jq --arg o "$org" '[.[] | select(.id == $o)][0] | { organizacion: .name, plan: (.plan.name // .plan // "(no informado)") }' 2>/dev/null \
+              || echo "(no se pudo leer el plan)"
+          fi
+
+          echo ""
+          echo "== Cuánto pesa la base =="
+          q "select pg_size_pretty(pg_database_size(current_database())) as tamano_base;"
+          echo "   (el plan gratuito da 500 MB)"
+
+          echo ""
+          echo "== Qué tan grande es lo que cada celular sincroniza =="
+          # Las cuatro colecciones que la app baja cada 15 segundos. Si esto crece
+          # mucho, la app se vuelve lenta y gasta datos del celular de cada uno.
+          q "select key,
+                    pg_size_pretty(pg_column_size(value)::bigint) as peso,
+                    case when jsonb_typeof(value)='array' then jsonb_array_length(value) else 1 end as elementos,
+                    updated_at
+             from public.collections order by pg_column_size(value) desc;"
+          echo ""
+          q "select pg_size_pretty(sum(pg_column_size(value))::bigint) as baja_cada_celular_cada_15s
+             from public.collections
+             where key in ('gb_events_v1','gb_rounds_v2','gb_players_v2','gb_comm_v2');"
+
+          echo ""
+          echo "== Actividad (para que el proyecto no se pause solo) =="
+          q "select max(updated_at) as ultimo_cambio,
+                    (now() - max(updated_at)) as hace_cuanto
+             from public.collections;"
+          echo "   En el plan gratuito, una semana entera sin actividad pausa el proyecto."
