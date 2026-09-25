@@ -1,0 +1,117 @@
+# Busca personas repetidas: dos cuentas distintas para el mismo jugador.
+#
+# Pasa cuando alguien se vuelve a registrar con otro correo porque no pudo
+# entrar. El email NO se puede repetir (Supabase no lo permite), así que un
+# repetido siempre son dos correos para la misma persona.
+#
+# Solo lectura: no borra ni cambia nada. Muestra, de cada cuenta, lo que hay
+# que saber ANTES de decidir cuál se queda: si está en la comunidad, en cuántas
+# fechas jugó, cuánta plata tiene a su nombre y cuándo entró por última vez.
+# La que tenga fechas jugadas NO se puede borrar sin romper esos resultados.
+name: Buscar usuarios repetidos
+
+on:
+  workflow_dispatch:
+    inputs:
+      nombre:
+        description: "Buscar solo a alguien (parte del nombre). Vacío = revisa a todos."
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  buscar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repetidos
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          NOMBRE: ${{ inputs.nombre }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          case "$NOMBRE" in *'$n$'*) echo "ERROR: nombre inválido"; exit 1;; esac
+
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            echo "Suele ser el token: se renueva en Supabase -> Account -> Access Tokens"
+            echo "y se reemplaza en GitHub -> Settings -> Secrets -> Actions -> SUPABASE_TOKEN."
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; echo ""; }
+
+          # Ficha de cada jugador con TODO lo que cuelga de él. Sirve para decidir
+          # cuál cuenta se queda: la que tiene fechas jugadas no se puede tocar.
+          ficha="
+          with jugadores as (
+            select p->>'id' as id,
+                   lower(trim(regexp_replace(coalesce(p->>'name','') || ' ' || coalesce(p->>'last',''), '\\s+', ' ', 'g'))) as nombre,
+                   trim(coalesce(p->>'name','') || ' ' || coalesce(p->>'last','')) as nombre_visible,
+                   p->>'email' as email
+            from public.collections, jsonb_array_elements(value) p where key='gb_players_v2'
+          ),
+          fechas as (
+            select row->>'id' as id,
+                   count(*) as fechas_jugadas,
+                   round(sum((row->>'totalMoney')::numeric)) as soles
+            from public.collections, jsonb_array_elements(value) r, jsonb_array_elements(r->'results'->'rows') row
+            where key='gb_rounds_v2' group by 1
+          ),
+          miembros as (
+            select m as id, c->>'name' as comunidad
+            from public.collections, jsonb_array_elements(value) c,
+                 jsonb_array_elements_text(coalesce(c->'members','[]'::jsonb)) m
+            where key='gb_comm_v2'
+          ),
+          historico as (
+            select h.key as id, (h.value->>'fechas')::int as fechas_previas
+            from public.collections, jsonb_array_elements(value) c,
+                 jsonb_each(coalesce(c->'historico','{}'::jsonb)) t(temp, datos),
+                 jsonb_each(coalesce(datos->'jugadores','{}'::jsonb)) h
+            where key='gb_comm_v2'
+          )
+          select j.nombre_visible, j.email, j.id,
+                 coalesce(string_agg(distinct m.comunidad, ', '), '(en ninguna)') as comunidades,
+                 coalesce(max(f.fechas_jugadas), 0) as fechas_en_la_app,
+                 coalesce(max(hi.fechas_previas), 0) as fechas_previas,
+                 coalesce(max(f.soles), 0) as soles,
+                 u.created_at as cuenta_creada,
+                 u.last_sign_in_at as ultima_vez_que_entro
+          from jugadores j
+          left join fechas f on f.id = j.id
+          left join miembros m on m.id = j.id
+          left join historico hi on hi.id = j.id
+          left join auth.users u on u.id::text = j.id
+          "
+
+          if [ -n "$NOMBRE" ]; then
+            echo "== Cuentas que coinciden con «$NOMBRE» =="
+            q "$ficha where j.nombre like '%' || lower(\$n\$${NOMBRE}\$n\$) || '%'
+               group by j.nombre_visible, j.email, j.id, u.created_at, u.last_sign_in_at
+               order by u.created_at;"
+          fi
+
+          echo "== Personas con MÁS DE UNA cuenta =="
+          q "$ficha where j.nombre in (
+               select lower(trim(regexp_replace(coalesce(p->>'name','') || ' ' || coalesce(p->>'last',''), '\\s+', ' ', 'g')))
+               from public.collections, jsonb_array_elements(value) p where key='gb_players_v2'
+               group by 1 having count(*) > 1)
+             group by j.nombre_visible, j.email, j.id, u.created_at, u.last_sign_in_at
+             order by j.nombre_visible, u.created_at;"
+
+          echo "== Cuentas sin NINGUNA actividad (candidatas a sobrar) =="
+          q "$ficha
+             group by j.nombre_visible, j.email, j.id, u.created_at, u.last_sign_in_at
+             having coalesce(max(f.fechas_jugadas), 0) = 0
+                and coalesce(max(hi.fechas_previas), 0) = 0
+             order by u.created_at desc;"
+
+          echo ""
+          echo "Antes de borrar a alguien: si tiene fechas en la app o fechas previas,"
+          echo "borrarlo deja esos resultados apuntando a un jugador que ya no existe."
+          echo "En ese caso no se borra: se deja la cuenta vieja y se saca la nueva."
