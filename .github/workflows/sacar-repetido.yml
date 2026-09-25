@@ -1,0 +1,130 @@
+# Saca una cuenta REPETIDA que no tiene ninguna actividad.
+#
+# Se usa cuando alguien se registró dos veces (normalmente porque no pudo entrar
+# y volvió a crear cuenta con otro correo). Borra la cuenta NUEVA y deja la
+# vieja, que es la que tiene el historial.
+#
+# Es destructivo, así que:
+#   - Hay que escribir el email completo Y la palabra BORRAR para confirmar.
+#   - Antes de tocar nada comprueba que esa cuenta NO tenga fechas jugadas, ni
+#     fechas previas, ni plata, ni inscripciones abiertas. Si tiene algo, se
+#     detiene: borrarla dejaría resultados apuntando a un jugador inexistente.
+#
+# Limpia los cuatro sitios donde vive una persona, que si no quedan a medias:
+#   1. La cuenta en sí (auth.users), para que no pueda volver a entrar.
+#   2. Su ficha de jugador (gb_players_v2).
+#   3. Su sitio en las comunidades (gb_comm_v2), que es lo que hace que salga
+#      repetido al armar grupos.
+#   4. La "época": sube un número que hace que los celulares con la app abierta
+#      se recarguen en vez de volver a subir lo que tenían guardado. Sin esto,
+#      el primer celular que guarde algo resucita al jugador borrado.
+name: Sacar una cuenta repetida
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email EXACTO de la cuenta que sobra (la nueva)"
+        required: true
+      confirmar:
+        description: "Escribe BORRAR para confirmar"
+        required: true
+        default: ""
+
+permissions: {}
+
+jobs:
+  sacar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sacar la cuenta
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          EMAIL: ${{ inputs.email }}
+          CONFIRMAR: ${{ inputs.confirmar }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          [ "$CONFIRMAR" = "BORRAR" ] || { echo "ERROR: hay que escribir BORRAR para confirmar"; exit 1; }
+          case "$EMAIL" in *'$mail$'*) echo "ERROR: email inválido"; exit 1;; esac
+
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
+
+          echo "== A quién vamos a sacar =="
+          quien=$(q "select u.id::text as id, u.email, u.created_at,
+                            (select count(*) from public.collections c1, jsonb_array_elements(c1.value) r,
+                                    jsonb_array_elements(r->'results'->'rows') row
+                              where c1.key='gb_rounds_v2' and row->>'id' = u.id::text) as fechas_en_la_app,
+                            (select count(*) from public.collections c2, jsonb_array_elements(c2.value) c,
+                                    jsonb_each(coalesce(c->'historico','{}'::jsonb)) t(tmp, datos)
+                              where c2.key='gb_comm_v2' and datos->'jugadores' ? u.id::text) as fechas_previas,
+                            (select count(*) from public.collections c3, jsonb_array_elements(c3.value) e
+                              where c3.key='gb_events_v1' and e->>'status' <> 'cerrado'
+                                and coalesce(e->'registered','[]'::jsonb) ? u.id::text) as eventos_abiertos
+                     from auth.users u where lower(u.email) = lower(\$mail\$${EMAIL}\$mail\$);")
+          echo "$quien" | jq .
+          echo "$quien" | jq -e 'type=="array" and length == 1' > /dev/null \
+            || { echo "ERROR: no encontré exactamente una cuenta con ese email."; exit 1; }
+
+          id=$(echo "$quien" | jq -r '.[0].id')
+          total=$(echo "$quien" | jq '[.[0].fechas_en_la_app, .[0].fechas_previas, .[0].eventos_abiertos] | add')
+          if [ "$total" != "0" ]; then
+            echo ""
+            echo "⛔ ME DETENGO: esta cuenta tiene actividad (fechas jugadas, fechas previas"
+            echo "   o inscripciones abiertas). Borrarla dejaría esos datos rotos."
+            echo "   Si de verdad sobra, primero hay que mover su historial a la otra cuenta."
+            exit 1
+          fi
+          echo ""
+          echo "Sin actividad. Se puede sacar. Id: $id"
+          echo ""
+
+          revisar() {
+            echo "$1" | jq -e 'if type=="object" and (has("message") or has("error")) then false else true end' > /dev/null \
+              || { echo "ERROR de la base: $1"; exit 1; }
+          }
+
+          echo "== 1. Sacándolo de las comunidades =="
+          # El _rev sube fuerte para que esta versión gane a la de cualquier celular.
+          r=$(q "update public.collections set value = (
+                   select jsonb_agg(c || jsonb_build_object(
+                     'members', coalesce((select jsonb_agg(m) from jsonb_array_elements_text(coalesce(c->'members','[]'::jsonb)) m
+                                           where m <> \$uid\$${id}\$uid\$), '[]'::jsonb),
+                     'applicants', coalesce((select jsonb_agg(a) from jsonb_array_elements_text(coalesce(c->'applicants','[]'::jsonb)) a
+                                              where a <> \$uid\$${id}\$uid\$), '[]'::jsonb),
+                     '_rev', (coalesce((c->>'_rev')::int, 0) + 100)))
+                   from jsonb_array_elements(value) c)
+                 where key='gb_comm_v2';")
+          revisar "$r"; echo "   hecho"
+
+          echo "== 2. Quitando su ficha de jugador =="
+          r=$(q "update public.collections set value = coalesce(
+                   (select jsonb_agg(p) from jsonb_array_elements(value) p
+                     where p->>'id' <> \$uid\$${id}\$uid\$), '[]'::jsonb)
+                 where key='gb_players_v2';")
+          revisar "$r"; echo "   hecho"
+
+          echo "== 3. Borrando la cuenta =="
+          r=$(q "delete from auth.users where id = \$uid\$${id}\$uid\$::uuid;")
+          revisar "$r"; echo "   hecho"
+
+          echo "== 4. Subiendo la época (los celulares abiertos se recargan) =="
+          r=$(q "insert into public.collections (key, value, updated_at)
+                 values ('gb_epoch', to_jsonb(extract(epoch from now())::bigint), now())
+                 on conflict (key) do update set value = excluded.value, updated_at = now();")
+          revisar "$r"; echo "   hecho"
+
+          echo ""
+          echo "== Cómo quedó =="
+          q "select count(*) as cuentas_con_ese_email from auth.users where lower(email) = lower(\$mail\$${EMAIL}\$mail\$);" | jq .
+          q "select c->>'name' as comunidad, jsonb_array_length(c->'members') as miembros
+             from public.collections c0, jsonb_array_elements(c0.value) c where c0.key='gb_comm_v2';" | jq .
+          q "select count(*) as jugadores from public.collections c0, jsonb_array_elements(c0.value) p where c0.key='gb_players_v2';" | jq .
