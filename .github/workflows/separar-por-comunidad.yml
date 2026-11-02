@@ -27,6 +27,10 @@ on:
         description: "Vacío = solo mirar. Escribe ESCRIBIR para crear las filas"
         required: false
         default: ""
+      limpiar:
+        description: "Escribe LIMPIAR para borrar además la fila vieja de las casuales (solo si cada una ya tiene la suya)"
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -38,6 +42,7 @@ jobs:
         env:
           SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
           CONFIRMAR: ${{ inputs.confirmar }}
+          LIMPIAR: ${{ inputs.limpiar }}
         run: |
           set -euo pipefail
           [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
@@ -205,6 +210,41 @@ jobs:
                select count(*) as n from public.collections c, jsonb_array_elements(c.value) e
                where c.key like 'gb_histcards_v1:%')
              select (select n from antes) as paquetes_antes, (select n from ahora) as paquetes_ahora;" | jq .
+
+          # ---- Borrar la fila vieja de las casuales ----
+          # Esta sí hay que borrarla, no solo dejar de usarla: lleva TODAS las
+          # rondas casuales juntas, así que con los permisos nuevos cualquiera
+          # que haya jugado UNA puede leerla entera. Las filas únicas de las
+          # otras colecciones no tienen ese problema (nadie las puede leer) y se
+          # quedan como respaldo.
+          if [ "${LIMPIAR}" = "LIMPIAR" ]; then
+            echo ""
+            echo "== 4b. BORRANDO LA FILA VIEJA DE LAS CASUALES =="
+            for raiz in gb_rounds_v2 gb_events_v1 gb_histcards_v1; do
+              existe=$(q "select count(*) as n from public.collections where key = '$raiz:libre';" | jq -r '.[0].n')
+              [ "$existe" = "0" ] && { echo "  $raiz:libre — ya no existe"; continue; }
+              # Antes de borrar: cada cosa que lleva dentro tiene que estar ya en
+              # su propia fila. Si falta una sola, no se borra nada.
+              sueltas=$(q "select e->>'id' as id
+                           from public.collections c, jsonb_array_elements(c.value) e
+                           where c.key = '$raiz:libre'
+                             and not exists (
+                               select 1 from public.collections c2, jsonb_array_elements(c2.value) e2
+                               where c2.key = '$raiz:libre:' || (e->>'id') and e2->>'id' = e->>'id');")
+              if [ "$(echo "$sueltas" | jq 'length')" != "0" ]; then
+                echo "  ⛔ $raiz:libre NO se borra: estas no tienen su propia fila todavía:"
+                echo "$sueltas" | jq -r '.[] | "     · \(.id)"'
+                exit 1
+              fi
+              q "delete from public.collections where key = '$raiz:libre';" > /dev/null
+              echo "  $raiz:libre — borrada (todo estaba ya en su propia fila)"
+            done
+          else
+            echo ""
+            echo "(La fila vieja de las casuales sigue ahí. Con los permisos nuevos,"
+            echo " cualquiera que haya jugado una casual puede leerla entera, así que"
+            echo " conviene borrarla: volver a lanzar escribiendo LIMPIAR.)"
+          fi
 
           echo ""
           echo "== 5. CÓMO QUEDÓ =="
