@@ -122,5 +122,19 @@ console.log("\n=== 8. LA APP ESCRIBE LOS DOS FORMATOS Y LEE EL NUEVO ===");
     !/store\.get\("gb_rounds_v2"/.test(src) && !/store\.get\("gb_events_v1"/.test(src));
 }
 
+console.log("\n=== 9. EL SONDEO NO PIDE TODO CADA 15 SEGUNDOS ===");
+{
+  // Las fechas son 88 kB de los 115 que se pedían cada 15 s, y casi nunca
+  // cambian. Si alguien las vuelve a pedir en cada vuelta, el gasto de datos de
+  // los 48 celulares se multiplica por cuatro sin que nadie lo note.
+  const sondeo = src.slice(src.indexOf("// SINCRONIZACIÓN EN VIVO"), src.indexOf("const iv = setInterval(tick, 15000)"));
+  check("los eventos sí van en cada vuelta", /\.like\("key", RAIZ_EVENTOS \+ ":%"\),\s*\]\)/.test(sondeo));
+  check("las fechas van cada 8 vueltas (2 minutos)", /cada\(8\)/.test(sondeo));
+  check("y solo se piden cuando toca", /tocaFechas \? sb\.from\("collections"\)[\s\S]{0,90}RAIZ_RONDAS \+ ":%"\) : vacio/.test(sondeo));
+  check("si acaba de cerrarse una fecha, se piden al instante", /faltanFechas\.current && insistir\.current\+\+ < 4/.test(sondeo));
+  check("pero no se insiste para siempre", /if \(!falta\) insistir\.current = 0;/.test(src));
+  check("los jugadores y las comunidades, cada minuto", /const tocaGente = cada\(4\)/.test(sondeo));
+}
+
 console.log(fallos === 0 ? "\nRESULTADO: todo correcto" : `\nRESULTADO: ${fallos} fallo(s)`);
 process.exit(fallos ? 1 : 0);

@@ -5365,28 +5365,52 @@ export default function App() {
     })();
   }, []);
 
+  /* Si un evento ya cerrado apunta a una fecha que este celular todavía no
+     tiene, el sondeo trae las fechas sin esperar su turno — e insiste unas
+     cuantas veces, no para siempre: si esa fecha se borró, no tiene sentido
+     volver a pedirlas cada 15 s el resto del día. */
+  const faltanFechas = useRef(false);
+  const insistir = useRef(0);
+  {
+    const falta = events.some((e) => e.status === "cerrado" && !rounds.some((r) => r.id === (e.resultsRoundId || e.id)));
+    if (!falta) insistir.current = 0;
+    faltanFechas.current = falta;
+  }
+
   // SINCRONIZACIÓN EN VIVO (modo nube): cada 15s se traen los datos compartidos
   // y se fusionan con lo local — así cada anotador ve el avance de los demás
   // grupos sin pisar lo suyo.
   useEffect(() => {
     if (!CLOUD || !me) return;
     const stable = (prev, next) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
-    let vuelta = 0;
+    let vuelta = -1;
     const tick = async () => {
       if (document.hidden) return;
+      vuelta++;
+      const cada = (n) => vuelta % n === 0;
       try {
         if (await epochChanged()) { window.location.reload(); return; }
-        /* La fila única de antes solo hace falta mientras algún celular siga
-           con la versión anterior de la app, que escribe nada más que ahí. Se
-           consulta una vez por minuto en vez de cada 15 s: si ese celular anota
-           un score, se ve con un minuto de atraso en el peor caso, y así el
-           sondeo no pesa el doble. Cuando ya nadie use la versión anterior,
-           esta consulta se quita y el sondeo baja a la mitad. */
-        const traerVieja = vuelta++ % 4 === 0;
-        const claves = ["gb_players_v2", "gb_comm_v2", ...(traerVieja ? [RAIZ_RONDAS, RAIZ_EVENTOS] : [])];
+        /* NO todo hace falta cada 15 segundos, y pedirlo igual se paga con los
+           datos del celular de cada uno:
+           - Los EVENTOS cambian con cada golpe que anota alguien: cada vuelta.
+           - Las FECHAS consolidadas casi nunca cambian y son lo más pesado de
+             todo (88 kB de los 115 que se pedían): cada 2 minutos alcanza, y si
+             acaba de cerrarse una fecha se piden al instante (ver arriba).
+           - Las fichas de jugadores y las comunidades cambian poco: cada minuto.
+           - La fila única de antes solo hace falta mientras algún celular siga
+             con la versión anterior de la app, que escribe nada más que ahí; va
+             al mismo ritmo que la cosa que duplica. Cuando ya nadie use esa
+             versión, estas consultas se quitan. */
+        const tocaGente = cada(4);
+        const tocaFechas = cada(8) || (faltanFechas.current && insistir.current++ < 4);
+        const claves = [
+          ...(tocaGente ? ["gb_players_v2", "gb_comm_v2", RAIZ_EVENTOS] : []),
+          ...(tocaFechas ? [RAIZ_RONDAS] : []),
+        ];
+        const vacio = { data: [] };
         const [globales, rondas, eventos] = await Promise.all([
-          sb.from("collections").select("key,value").in("key", claves),
-          sb.from("collections").select("key,value").like("key", RAIZ_RONDAS + ":%"),
+          claves.length ? sb.from("collections").select("key,value").in("key", claves) : vacio,
+          tocaFechas ? sb.from("collections").select("key,value").like("key", RAIZ_RONDAS + ":%") : vacio,
           sb.from("collections").select("key,value").like("key", RAIZ_EVENTOS + ":%"),
         ]);
         const map = {}; (globales.data || []).forEach((r) => (map[r.key] = r.value));
