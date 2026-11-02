@@ -5284,18 +5284,26 @@ export default function App() {
   // Al cambiar de pantalla, volver al tope de la página
   useEffect(() => { window.scrollTo(0, 0); }, [view, openCommunity]);
 
-  /* Lee una colección repartida por comunidad: las filas de cada comunidad más
-     la fila única del formato anterior, todo fusionado en una sola lista.
+  /* Lee una colección repartida por comunidad y la deja como una sola lista.
      Devuelve también cada fila tal como vino, para no reescribir lo que no
-     cambió. Cuando el servidor deje de entregar la fila única (porque ya solo
-     existan las de cada comunidad), esto sigue funcionando igual: llega vacía. */
+     cambió.
+
+     La fila única del formato anterior ya no se usa: quedó congelada en la base
+     como respaldo, y leerla sería peor que no leerla — una corrección hecha
+     después (un score borrado a mano, por ejemplo) volvería a aparecer, porque
+     la fusión nunca pisa un valor con uno vacío. Solo se mira si no llegó NI
+     UNA fila por comunidad, que es la señal de que algo salió mal. */
   const leerSeparado = async (raiz) => {
     const filas = await store.getPrefijo(raiz);
-    const vieja = (await store.get(raiz, [])) || [];
     const fusionar = SEPARADAS[raiz];
-    let lista = vieja;
-    Object.keys(filas).sort().forEach((k) => { lista = fusionar(lista, filas[k] || []); });
-    return { lista, filas: { ...filas, [raiz]: vieja } };
+    const claves = Object.keys(filas).sort();
+    if (!claves.length) {
+      const vieja = (await store.get(raiz, [])) || [];
+      return { lista: vieja, filas: {} };
+    }
+    let lista = [];
+    claves.forEach((k) => { lista = fusionar(lista, filas[k] || []); });
+    return { lista, filas };
   };
   const fotos = (filas) => Object.fromEntries(Object.entries(filas).map(([k, v]) => [k, JSON.stringify(v)]));
 
@@ -5313,13 +5321,14 @@ export default function App() {
     // formato anterior mientras dure la transición.
     const { lista: rnd, filas: filasRnd } = await leerSeparado(RAIZ_RONDAS);
     const { lista: evs, filas: filasEvs } = await leerSeparado(RAIZ_EVENTOS);
-    // Las tarjetas previas: la fila de cada comunidad más la fila única. Se leen
-    // una sola vez al entrar y este dispositivo nunca las escribe, así que
-    // quedan fuera del sondeo de cada 15 s. Si un paquete llegara por los dos
-    // caminos, `rondasDeTarjetas` descarta la fecha repetida.
+    // Las tarjetas previas, también por comunidad. Se leen una sola vez al
+    // entrar y este dispositivo nunca las escribe (las carga el flujo de
+    // importación), así que quedan fuera del sondeo de cada 15 s.
     const porComunidad = await store.getPrefijo(RAIZ_HIST);
-    const hcards = [...Object.keys(porComunidad).sort().flatMap((k) => porComunidad[k] || []),
-      ...((await store.get(RAIZ_HIST, [])) || [])];
+    const clavesHist = Object.keys(porComunidad).sort();
+    const hcards = clavesHist.length
+      ? clavesHist.flatMap((k) => porComunidad[k] || [])
+      : (await store.get(RAIZ_HIST, [])) || [];
     // Foto de lo cargado: mientras no cambie, este dispositivo no lo reescribe.
     // De las colecciones repartidas se guarda la foto de CADA fila tal como
     // vino, no la de la lista fusionada: así la primera vez que entre alguien
@@ -5397,16 +5406,10 @@ export default function App() {
              todo (88 kB de los 115 que se pedían): cada 2 minutos alcanza, y si
              acaba de cerrarse una fecha se piden al instante (ver arriba).
            - Las fichas de jugadores y las comunidades cambian poco: cada minuto.
-           - La fila única de antes solo hace falta mientras algún celular siga
-             con la versión anterior de la app, que escribe nada más que ahí; va
-             al mismo ritmo que la cosa que duplica. Cuando ya nadie use esa
-             versión, estas consultas se quitan. */
+           Las filas únicas de antes ya no se consultan: nadie las escribe. */
         const tocaGente = cada(4);
         const tocaFechas = cada(8) || (faltanFechas.current && insistir.current++ < 4);
-        const claves = [
-          ...(tocaGente ? ["gb_players_v2", "gb_comm_v2", RAIZ_EVENTOS] : []),
-          ...(tocaFechas ? [RAIZ_RONDAS] : []),
-        ];
+        const claves = tocaGente ? ["gb_players_v2", "gb_comm_v2"] : [];
         const vacio = { data: [] };
         const [globales, rondas, eventos] = await Promise.all([
           claves.length ? sb.from("collections").select("key,value").in("key", claves) : vacio,
@@ -5417,14 +5420,13 @@ export default function App() {
         if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeByIdRev(prev, map.gb_players_v2)));
         if (map.gb_comm_v2) setCommunities((prev) => stable(prev, mergeCommunities(prev, map.gb_comm_v2)));
         // Las fechas y los eventos llegan repartidos: se fusionan fila por fila.
-        const juntar = (filas, fila_unica, fusionar) => (prev) => {
+        const juntar = (filas, fusionar) => (prev) => {
           let out = prev;
-          if (fila_unica) out = fusionar(out, fila_unica);
           (filas || []).forEach((r) => { if (Array.isArray(r.value)) out = fusionar(out, r.value); });
           return stable(prev, out);
         };
-        setRounds(juntar(rondas.data, map[RAIZ_RONDAS], mergeByIdRev));
-        setEvents(juntar(eventos.data, map[RAIZ_EVENTOS], mergeEvents));
+        setRounds(juntar(rondas.data, mergeByIdRev));
+        setEvents(juntar(eventos.data, mergeEvents));
       } catch {}
     };
     const iv = setInterval(tick, 15000);
@@ -5446,12 +5448,11 @@ export default function App() {
   useEffect(() => { persist("gb_players_v2", playersAll); }, [playersAll, canWrite]);
   useEffect(() => { persist("gb_comm_v2", communities); }, [communities, canWrite]);
   useEffect(() => { persist("gb_courses_v2", coursesAll); }, [coursesAll, canWrite]);
-  /* Fechas y eventos: se guarda la fila de cada comunidad y, mientras dure la
-     transición, también la fila única de antes. Escribir las dos cuesta poco
-     (solo se sube lo que cambió, y lo que cambió es casi siempre UNA comunidad)
-     y permite volver a la versión anterior de la app sin perder nada. */
+  /* Fechas y eventos: cada comunidad a su fila. La fila única de antes ya no se
+     escribe — queda congelada en la base como respaldo. Mientras la app la
+     siguiera escribiendo no se le podía poner llave, y sin llave cualquiera que
+     entre puede leerla entera, que es justo lo que se quiere evitar. */
   const persistSeparado = (raiz, lista) => {
-    persist(raiz, lista);
     Object.entries(repartirPorComunidad(raiz, lista)).forEach(([k, v]) => persist(k, v));
   };
   useEffect(() => { persistSeparado(RAIZ_RONDAS, roundsAll); }, [roundsAll, canWrite]);

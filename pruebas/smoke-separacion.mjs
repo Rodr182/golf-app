@@ -45,46 +45,58 @@ const comunidades = await ls("gb_comm_v2");
 T("se crearon las dos comunidades", (comunidades || []).length === 2, String((comunidades || []).length));
 const [c1, c2] = (comunidades || []).map((c) => c.id);
 
+const fecha = (id, cid) => ({ id, communityId: cid, courseId: "inkas", date: "2026-10-18",
+  eventName: "Fecha " + id, teams: [], _rev: 1, results: { simple: false, rows: [], breakdown: [] } });
+const ponerFilaUnica = (fechas) => page.evaluate((v) => localStorage.setItem("gb_rounds_v2", JSON.stringify(v)), fechas);
+
 console.log("=== 1. LO QUE ESTÁ EN UNA SOLA FILA SE REPARTE SOLO ===");
 {
-  // Así están los datos hoy en la base: todas las fechas juntas en una fila.
-  const fecha = (id, cid) => ({ id, communityId: cid, courseId: "inkas", date: "2026-10-18",
-    eventName: "Fecha " + id, teams: [], _rev: 1, results: { simple: false, rows: [], breakdown: [] } });
-  await page.evaluate(([a, b]) => localStorage.setItem("gb_rounds_v2", JSON.stringify([a, b])),
-    [fecha("r1", c1), fecha("r2", c2)]);
+  // Así estaban los datos: todas las fechas de todas las comunidades juntas.
+  await ponerFilaUnica([fecha("r1", c1), fecha("r2", c2)]);
   await recargar();
   T("ahora hay una fila por comunidad", (await claves()).join(" ") === `gb_rounds_v2 gb_rounds_v2:${c1} gb_rounds_v2:${c2}`,
     (await claves()).join(" "));
   T("la fila de la primera lleva solo su fecha", ids(await ls(`gb_rounds_v2:${c1}`)) === "r1");
   T("la de la segunda, solo la suya", ids(await ls(`gb_rounds_v2:${c2}`)) === "r2");
-  T("y la fila única sigue ahí: se puede volver atrás sin perder nada", ids(await ls("gb_rounds_v2")) === "r1,r2");
+  T("y la fila única queda intacta, como respaldo", ids(await ls("gb_rounds_v2")) === "r1,r2");
 }
 
-console.log("\n=== 2. SIN LA FILA ÚNICA, LA APP SIGUE COMPLETA ===");
+console.log("\n=== 2. LA FILA ÚNICA YA NO SE LEE: QUEDÓ CONGELADA ===");
 {
-  // Es lo que pasará en cuanto el servidor deje de entregarla.
-  await borrarFila("gb_rounds_v2");
+  // Si se siguiera leyendo, lo viejo volvería a entrar. Peor: la fusión nunca
+  // pisa un valor con uno vacío, así que un score borrado a mano reaparecería.
+  await ponerFilaUnica([fecha("r1", c1), fecha("r2", c2), fecha("r3", c1)]);
   await recargar();
-  T("las dos fechas siguen en la app", ids(await ls("gb_rounds_v2")) === "r1,r2", ids(await ls("gb_rounds_v2")));
-  T("y cada fila por comunidad quedó intacta",
-    ids(await ls(`gb_rounds_v2:${c1}`)) === "r1" && ids(await ls(`gb_rounds_v2:${c2}`)) === "r2");
-  T("no se cayó nada en pantalla", errors.length === 0, errors.slice(0, 2).join(" | "));
+  T("la fecha que solo está en la fila vieja NO entra", ids(await ls(`gb_rounds_v2:${c1}`)) === "r1",
+    ids(await ls(`gb_rounds_v2:${c1}`)));
+  T("y la app no la reescribe", ids(await ls("gb_rounds_v2")) === "r1,r2,r3");
 }
 
 console.log("\n=== 3. SIN LA FILA DE UNA COMUNIDAD, FALTA SOLO ESA ===");
 {
   // Esto es lo que verá quien no pertenece a la segunda comunidad: el servidor
-  // no le entrega esa fila y su celular no se entera de que existe.
-  await borrarFila("gb_rounds_v2");
+  // no le entrega esa fila. Y aunque la fila vieja todavía tenga esa fecha, no
+  // se usa para colarla.
   await borrarFila(`gb_rounds_v2:${c2}`);
   await recargar();
-  const todo = await ls("gb_rounds_v2");
-  T("solo queda la fecha de la comunidad que sí se puede leer", ids(todo) === "r1", ids(todo));
-  T("no se filtró nada de la otra", !(todo || []).some((r) => r.communityId === c2));
-  T("y la app no se rompe por los datos que faltan", errors.length === 0, errors.slice(0, 2).join(" | "));
+  T("la fila de la otra comunidad no vuelve a aparecer", !(await claves()).includes(`gb_rounds_v2:${c2}`),
+    (await claves()).join(" "));
+  T("y la de la comunidad propia queda intacta", ids(await ls(`gb_rounds_v2:${c1}`)) === "r1");
+  T("la app no se rompe por los datos que faltan", errors.length === 0, errors.slice(0, 2).join(" | "));
 }
 
-console.log("\n=== 4. UNA FECHA NUEVA CAE EN LA FILA DE SU COMUNIDAD ===");
+console.log("\n=== 4. RED DE SEGURIDAD: SI NO LLEGA NINGUNA FILA, SE REHACEN ===");
+{
+  // Solo para el caso de que algo salga muy mal. Mientras haya al menos una
+  // fila por comunidad, la fila vieja se ignora (lo de arriba).
+  await borrarFila(`gb_rounds_v2:${c1}`);
+  await recargar();
+  T("se rehacen desde la fila vieja", ids(await ls(`gb_rounds_v2:${c1}`)) === "r1,r3",
+    ids(await ls(`gb_rounds_v2:${c1}`)));
+  T("y la de la otra comunidad también", ids(await ls(`gb_rounds_v2:${c2}`)) === "r2");
+}
+
+console.log("\n=== 5. UNA FECHA NUEVA CAE EN LA FILA DE SU COMUNIDAD ===");
 {
   // Lo mismo, pero con un evento creado desde la pantalla, no inyectado.
   await nav("Comunidades");

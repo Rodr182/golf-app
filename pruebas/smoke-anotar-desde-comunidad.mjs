@@ -95,9 +95,14 @@ await abrirTarjeta();
   T("y no le dice que es solo lectura", !/Vista en vivo \(solo lectura\)/.test(txt));
   await page.locator('input[inputmode="numeric"]').first().fill("5");
   await page.waitForTimeout(500);
+  // Los eventos viven en una fila por comunidad ("gb_events_v1:<id>"), así que
+  // se juntan todas las filas antes de mirar.
   const guardado = await page.evaluate(() => {
-    const ev = JSON.parse(localStorage.getItem("gb_events_v1") || "[]").filter((e) => !e._deleted)[0];
-    return Object.values((ev.groups[0] || {}).scores || {}).flat().filter((v) => v !== "" && v != null);
+    const evs = Object.keys(localStorage).filter((k) => k.startsWith("gb_events_v1"))
+      .flatMap((k) => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; } })
+      .filter((e) => e && !e._deleted);
+    return evs.flatMap((ev) => (ev.groups || []).flatMap((g) => Object.values(g.scores || {}).flat()))
+      .filter((v) => v !== "" && v != null);
   });
   T("y lo que escribe queda guardado", guardado.length > 0, JSON.stringify(guardado));
 }

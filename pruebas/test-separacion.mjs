@@ -107,19 +107,27 @@ console.log("\n=== 7. UN EVENTO EN DOS CELULARES, DENTRO DE SU FILA ===");
   check("y el hoyo 2 del segundo no se pierde", sc[1] === "5", String(sc[1]));
 }
 
-console.log("\n=== 8. LA APP ESCRIBE LOS DOS FORMATOS Y LEE EL NUEVO ===");
+console.log("\n=== 8. LA APP SOLO USA LAS FILAS POR COMUNIDAD ===");
 {
-  check("guardar escribe la fila única y la de cada comunidad",
-    /persist\(raiz, lista\);[\s\S]{0,200}repartirPorComunidad\(raiz, lista\)\)\.forEach/.test(src));
+  // La fila única de antes quedó congelada en la base como respaldo. Si la app
+  // la siguiera escribiendo no se le podría poner llave; y si la siguiera
+  // leyendo, una corrección hecha después volvería a aparecer, porque la
+  // fusión nunca pisa un valor con uno vacío.
+  const guardar = src.slice(src.indexOf("const persistSeparado"), src.indexOf("useEffect(() => { persistSeparado(RAIZ_RONDAS"));
+  check("guardar escribe SOLO la fila de cada comunidad",
+    /repartirPorComunidad\(raiz, lista\)\)\.forEach/.test(guardar) && !/persist\(raiz, lista\)/.test(guardar));
   check("las fechas y los eventos pasan por el guardado repartido",
     /persistSeparado\(RAIZ_RONDAS, roundsAll\)/.test(src) && /persistSeparado\(RAIZ_EVENTOS, eventsAll\)/.test(src));
   check("al entrar se leen las filas por comunidad", /leerSeparado\(RAIZ_RONDAS\)/.test(src) && /leerSeparado\(RAIZ_EVENTOS\)/.test(src));
   check("el sondeo de cada 15 s pide las filas por prefijo",
     (src.match(/\.like\("key", RAIZ_(RONDAS|EVENTOS) \+ ":%"\)/g) || []).length >= 2);
+  check("y el sondeo ya no pide las filas únicas",
+    !/in\("key", \["gb_players_v2", "gb_comm_v2", RAIZ_/.test(src));
   check("la foto de lo cargado es fila por fila, no de la lista entera",
     /\.\.\.fotos\(filasRnd\), \.\.\.fotos\(filasEvs\)/.test(src));
-  check("no quedó ninguna lectura de la lista entera de rondas al cargar",
-    !/store\.get\("gb_rounds_v2"/.test(src) && !/store\.get\("gb_events_v1"/.test(src));
+  const leer = src.slice(src.indexOf("const leerSeparado"), src.indexOf("const fotos ="));
+  check("la fila única solo se mira si no llegó ni una por comunidad",
+    /if \(!claves\.length\) \{[\s\S]{0,180}store\.get\(raiz, \[\]\)/.test(leer));
 }
 
 console.log("\n=== 9. EL SONDEO NO PIDE TODO CADA 15 SEGUNDOS ===");
