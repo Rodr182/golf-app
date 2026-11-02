@@ -379,7 +379,7 @@ Cada comunidad guarda lo suyo en su propia fila de la tabla `collections`:
 | `gb_rounds_v2:<id de comunidad>` | las fechas jugadas de esa comunidad | solo sus miembros |
 | `gb_events_v1:<id de comunidad>` | sus eventos | solo sus miembros |
 | `gb_histcards_v1:<id de comunidad>` | las tarjetas de las fechas previas a la app | solo sus miembros |
-| `gb_rounds_v2:libre`, `gb_events_v1:libre` | las rondas casuales, que no son de ninguna comunidad | cualquiera con cuenta |
+| `gb_rounds_v2:libre:<id>`, `gb_events_v1:libre:<id>` | **una ronda casual** (no es de ninguna comunidad) | solo quien la jugó |
 | `gb_players_v2` | la lista de jugadores (sin correos) | cualquiera con cuenta |
 | `gb_comm_v2` | las comunidades, para poder buscarlas y postular | cualquiera con cuenta |
 | `gb_courses_v2` | el catálogo de canchas | cualquiera con cuenta |
@@ -389,11 +389,19 @@ Quién puede leer qué **lo decide el servidor**, no la app: ver
 trabajando con una sola lista de fechas en memoria; el reparto pasa solo al
 guardar y al leer.
 
+Las rondas de una comunidad se filtran preguntando quién es miembro. Una ronda
+casual no tiene comunidad a la que preguntarle, así que va **sola en su fila** y
+la regla mira la ronda misma: la ve quien la creó, quien está inscrito, quien
+aparece en los resultados o en algún grupo, y el anotador.
+
 Antes todo vivía en una fila por colección (`gb_rounds_v2` a secas). Esas filas
 siguen en la base, congeladas como respaldo: nadie las lee ni las escribe, y
 los permisos no las entregan a nadie. El flujo **Separar los datos por
 comunidad** es el que hizo el reparto, y se puede volver a lanzar sin riesgo
-(no pisa una fila que ya exista).
+(no pisa una fila que ya exista). Para comprobar en cualquier momento que los
+permisos siguen haciendo lo que deben, el flujo **Permisos por comunidad** en
+modo `probar` lo revisa haciendo de cuenta que es cada persona, sin tocar nada;
+en modo `REVERTIR` vuelve a dejar todo abierto.
 
 ## Publicación automática (GitHub Pages)
 
