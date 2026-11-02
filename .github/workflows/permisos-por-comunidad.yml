@@ -248,19 +248,26 @@ jobs:
           fi
 
           # ---- Las reglas de antes, para poder volver ----
+          # Se borra lo que HAYA (preguntándole a la base, no por una lista
+          # escrita a mano) y se vuelve a dejar todo abierto, en una sola
+          # transacción para no quedarse a medias.
           abrir() {
-            q "drop policy if exists \"leer solo lo de mis comunidades\" on public.collections;
-               drop policy if exists \"escribir solo lo de mis comunidades\" on public.collections;
-               drop policy if exists \"corregir solo lo de mis comunidades\" on public.collections;
-               drop policy if exists \"authenticated can read\" on public.collections;
-               drop policy if exists \"authenticated can insert\" on public.collections;
-               drop policy if exists \"authenticated can update\" on public.collections;
+            q "begin;
+               do \$limpia\$
+               declare p record;
+               begin
+                 for p in select policyname from pg_policies
+                          where schemaname='public' and tablename='collections' loop
+                   execute format('drop policy %I on public.collections', p.policyname);
+                 end loop;
+               end \$limpia\$;
                create policy \"authenticated can read\" on public.collections
                  for select to authenticated using (true);
                create policy \"authenticated can insert\" on public.collections
                  for insert to authenticated with check (true);
                create policy \"authenticated can update\" on public.collections
-                 for update to authenticated using (true) with check (true);" > /dev/null
+                 for update to authenticated using (true) with check (true);
+               commit;" > /dev/null
           }
 
           if [ "$MODO" = "REVERTIR" ]; then
@@ -363,18 +370,36 @@ jobs:
           echo "== 5. PONIENDO LA REGLA =="
           # Las funciones ya están creadas arriba (crearFunciones), que es lo que
           # permitió probar la regla antes de ponerla.
-          q "drop policy if exists \"authenticated can read\" on public.collections;
-             drop policy if exists \"authenticated can insert\" on public.collections;
-             drop policy if exists \"authenticated can update\" on public.collections;
-             drop policy if exists \"leer solo lo de mis comunidades\" on public.collections;
-             drop policy if exists \"escribir solo lo de mis comunidades\" on public.collections;
+          #
+          # Se borran TODAS las políticas de la tabla, no una lista escrita a
+          # mano: la primera vez que se lanzó esto quedó a medias justamente por
+          # eso — faltaba un nombre en la lista, el "create" chocó con la
+          # política que ya existía, y la de corregir se quedó con la regla
+          # vieja. Pedirle a la base cuáles hay no se puede equivocar.
+          # Y todo en una sola transacción: si algo falla, no se aplica NADA. Una
+          # tabla sin ninguna política es una tabla que nadie puede leer, o sea
+          # la app caída para los 48; quedarse a medias acá no es una opción.
+          q "begin;
+             do \$limpia\$
+             declare p record;
+             begin
+               for p in select policyname from pg_policies
+                        where schemaname='public' and tablename='collections' loop
+                 execute format('drop policy %I on public.collections', p.policyname);
+               end loop;
+             end \$limpia\$;
              create policy \"leer solo lo de mis comunidades\" on public.collections
                for select to authenticated using ( ${REGLA} );
              create policy \"escribir solo lo de mis comunidades\" on public.collections
                for insert to authenticated with check ( ${REGLA} );
              create policy \"corregir solo lo de mis comunidades\" on public.collections
-               for update to authenticated using ( ${REGLA} ) with check ( ${REGLA} );" > /dev/null
+               for update to authenticated using ( ${REGLA} ) with check ( ${REGLA} );
+             commit;" > /dev/null
           echo "  políticas: listas"
+          # Y que de verdad quedaron las tres, no una ni dos.
+          n=$(q "select count(*) as n from pg_policies
+                 where schemaname='public' and tablename='collections';" | jq -r '.[0].n')
+          [ "$n" = "3" ] || { echo "⛔ quedaron $n políticas en vez de 3. Dejando todo abierto."; abrir; exit 1; }
 
           if ! comprobar; then
             echo ""
