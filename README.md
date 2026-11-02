@@ -356,8 +356,11 @@ compartidos entre todos, usando [Supabase](https://supabase.com) (gratis).
 
 1. Crea una cuenta en [supabase.com](https://supabase.com) y un proyecto
    nuevo (el plan Free basta).
-2. En el panel del proyecto, abre **SQL Editor**, pega el contenido de
-   `supabase/migrations/20260718000000_init.sql` y presiona **Run**.
+2. En el panel del proyecto, abre **SQL Editor** y corre los archivos de
+   `supabase/migrations/` **en orden**: primero `20260718000000_init.sql`
+   (la tabla) y después `20261102000000_permisos_por_comunidad.sql` (los
+   permisos). Si te salteas el segundo, cualquiera que inicie sesión puede
+   leer los datos de todas las comunidades.
 3. En **Authentication → Sign In / Up → Email**, desactiva
    **"Confirm email"** (para que tus amigos entren sin paso de confirmación).
 4. En **Project Settings → API** copia la **Project URL** y la clave
@@ -366,6 +369,31 @@ compartidos entre todos, usando [Supabase](https://supabase.com) (gratis).
 
 El primer usuario que se registre queda como administrador de la comunidad
 Korn Ferry Boys.
+
+## Cómo están guardados los datos
+
+Cada comunidad guarda lo suyo en su propia fila de la tabla `collections`:
+
+| Fila | Qué lleva | Quién la puede leer |
+|---|---|---|
+| `gb_rounds_v2:<id de comunidad>` | las fechas jugadas de esa comunidad | solo sus miembros |
+| `gb_events_v1:<id de comunidad>` | sus eventos | solo sus miembros |
+| `gb_histcards_v1:<id de comunidad>` | las tarjetas de las fechas previas a la app | solo sus miembros |
+| `gb_rounds_v2:libre`, `gb_events_v1:libre` | las rondas casuales, que no son de ninguna comunidad | cualquiera con cuenta |
+| `gb_players_v2` | la lista de jugadores (sin correos) | cualquiera con cuenta |
+| `gb_comm_v2` | las comunidades, para poder buscarlas y postular | cualquiera con cuenta |
+| `gb_courses_v2` | el catálogo de canchas | cualquiera con cuenta |
+
+Quién puede leer qué **lo decide el servidor**, no la app: ver
+`supabase/migrations/20261102000000_permisos_por_comunidad.sql`. La app sigue
+trabajando con una sola lista de fechas en memoria; el reparto pasa solo al
+guardar y al leer.
+
+Antes todo vivía en una fila por colección (`gb_rounds_v2` a secas). Esas filas
+siguen en la base, congeladas como respaldo: nadie las lee ni las escribe, y
+los permisos no las entregan a nadie. El flujo **Separar los datos por
+comunidad** es el que hizo el reparto, y se puede volver a lanzar sin riesgo
+(no pisa una fila que ya exista).
 
 ## Publicación automática (GitHub Pages)
 
