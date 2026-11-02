@@ -59,27 +59,50 @@ jobs:
             printf '%s' "$resp"
           }
 
+          # Dónde va cada elemento. Las fechas y los eventos de una comunidad, a
+          # la fila de esa comunidad. Una ronda CASUAL no es de ninguna, así que
+          # no hay a quién preguntarle si uno puede verla: va sola en su propia
+          # fila, y los permisos deciden mirando quién jugó.
+          DESTINO="case when coalesce(e->>'communityId','libre') = 'libre'
+                        then 'libre:' || coalesce(e->>'id','sin-id')
+                        else e->>'communityId' end"
+
           echo "== 1. CÓMO ESTÁ HOY =="
           q "select c.key,
                     pg_size_pretty(pg_column_size(c.value)::bigint) as peso,
-                    case when jsonb_typeof(c.value)='array' then jsonb_array_length(c.value) end as elementos
+                    case when jsonb_typeof(c.value)='array' then jsonb_array_length(c.value) end as elementos,
+                    to_char(c.updated_at, 'YYYY-MM-DD HH24:MI') as ultimo_cambio_utc
              from public.collections c
              where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1')
                 or c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%' or c.key like 'gb_histcards_v1:%'
-             order by c.key;" | jq -r '.[] | "  \(.key)\t\(.peso)\t\(.elementos // "-") elemento(s)"'
+             order by c.key;" | jq -r '.[] | "  \(.key)\t\(.peso)\t\(.elementos // "-") elemento(s)\t\(.ultimo_cambio_utc)"'
+
+          # Si hay una ronda casual EN JUEGO, repartirla ahora mismo le movería
+          # la fila a quien está anotando. Mejor saberlo antes.
+          echo ""
+          echo "== 1b. ¿HAY ALGUNA RONDA CASUAL EN JUEGO AHORA? =="
+          enJuego=$(q "select e->>'id' as id, e->>'name' as nombre, e->>'status' as estado, e->>'date' as fecha
+                       from public.collections c, jsonb_array_elements(c.value) e
+                       where (c.key = 'gb_events_v1' or c.key like 'gb_events_v1:libre%')
+                         and coalesce(e->>'communityId','libre') = 'libre'
+                         and coalesce(e->>'status','') <> 'cerrado';")
+          if [ "$(echo "$enJuego" | jq 'length')" = "0" ]; then
+            echo "  No. Ninguna ronda casual abierta."
+          else
+            echo "  Sí, hay rondas casuales sin cerrar:"
+            echo "$enJuego" | jq -r '.[] | "  ⚠️  \(.nombre) · \(.fecha) · \(.estado)"'
+          fi
 
           echo ""
           echo "== 2. QUÉ FILAS HARÍAN FALTA =="
-          # Las fechas y los eventos se reparten por el communityId de cada
-          # elemento; las rondas casuales no son de ninguna comunidad y van a
-          # ":libre". Las tarjetas previas, por el communityId del paquete.
           q "with sueltos as (
-               select c.key as raiz, coalesce(e->>'communityId','libre') as cid, count(*) as n
+               select c.key as raiz, ${DESTINO} as destino, count(*) as n
                from public.collections c, jsonb_array_elements(c.value) e
                where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1')
+                  or c.key in ('gb_rounds_v2:libre','gb_events_v1:libre','gb_histcards_v1:libre')
                group by 1, 2)
-             select s.raiz || ':' || s.cid as fila, s.n as elementos,
-                    exists (select 1 from public.collections c2 where c2.key = s.raiz || ':' || s.cid) as ya_existe
+             select s.raiz || ':' || s.destino as fila, s.n as elementos,
+                    exists (select 1 from public.collections c2 where c2.key = s.raiz || ':' || s.destino) as ya_existe
              from sueltos s order by 1;" \
             | jq -r '.[] | "  \(.fila)\t\(.elementos) elemento(s)\t\(if .ya_existe then "ya existe, no se toca" else "se crearía" end)"'
 
@@ -95,13 +118,15 @@ jobs:
           # "on conflict do nothing": si la app ya escribió la fila de una
           # comunidad, lo que tiene es igual o más nuevo que esto. Pisarla
           # podría borrar una fecha recién consolidada.
+          # Se parte de la fila única de cada colección Y de la fila donde antes
+          # iban juntas todas las casuales ("...:libre"), que también se reparte.
           for raiz in gb_rounds_v2 gb_events_v1 gb_histcards_v1; do
             r=$(q "insert into public.collections (key, value, updated_at)
-                   select c.key || ':' || coalesce(e->>'communityId','libre'),
+                   select '$raiz' || ':' || ${DESTINO},
                           jsonb_agg(e order by (e->>'id') collate \"C\"),
                           now()
                    from public.collections c, jsonb_array_elements(c.value) e
-                   where c.key = '$raiz'
+                   where c.key in ('$raiz', '$raiz:libre')
                    group by 1
                    on conflict (key) do nothing;")
             echo "  $raiz: hecho"
@@ -114,9 +139,9 @@ jobs:
           # falla: es justo lo que no se puede dejar pasar.
           faltan=$(q "with antes as (
                         select c.key as raiz, e->>'id' as id,
-                               c.key || ':' || coalesce(e->>'communityId','libre') as fila
+                               split_part(c.key, ':', 1) || ':' || ${DESTINO} as fila
                         from public.collections c, jsonb_array_elements(c.value) e
-                        where c.key in ('gb_rounds_v2','gb_events_v1')),
+                        where c.key in ('gb_rounds_v2','gb_events_v1','gb_rounds_v2:libre','gb_events_v1:libre')),
                       ahora as (
                         select c.key as fila, e->>'id' as id
                         from public.collections c, jsonb_array_elements(c.value) e

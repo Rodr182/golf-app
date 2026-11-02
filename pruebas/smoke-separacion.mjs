@@ -96,7 +96,40 @@ console.log("\n=== 4. RED DE SEGURIDAD: SI NO LLEGA NINGUNA FILA, SE REHACEN ===
   T("y la de la otra comunidad también", ids(await ls(`gb_rounds_v2:${c2}`)) === "r2");
 }
 
-console.log("\n=== 5. UNA FECHA NUEVA CAE EN LA FILA DE SU COMUNIDAD ===");
+console.log("\n=== 5. CADA RONDA CASUAL, EN SU PROPIA FILA ===");
+{
+  // Una ronda casual no es de ninguna comunidad: no hay a quién preguntarle si
+  // uno puede verla. Por eso va sola en su fila, y el servidor decide mirando
+  // quién jugó. Si fueran todas juntas, ver una sería ver todas.
+  await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("gb_rounds_v2")).forEach((k) => localStorage.removeItem(k)));
+  await ponerFilaUnica([fecha("L1", "libre"), fecha("L2", "libre"), fecha("r1", c1)]);
+  await recargar();
+  const cl = await claves();
+  T("cada casual tiene su fila", cl.includes("gb_rounds_v2:libre:L1") && cl.includes("gb_rounds_v2:libre:L2"), cl.join(" "));
+  T("y no quedaron todas juntas en una", !cl.includes("gb_rounds_v2:libre"), cl.join(" "));
+  T("cada fila lleva una sola ronda", ids(await ls("gb_rounds_v2:libre:L1")) === "L1" && ids(await ls("gb_rounds_v2:libre:L2")) === "L2");
+  T("y la de la comunidad sigue aparte", ids(await ls(`gb_rounds_v2:${c1}`)) === "r1");
+}
+
+console.log("\n=== 6. LA FILA VIEJA DE LAS CASUALES TAMBIÉN QUEDA CONGELADA ===");
+{
+  // Igual que la fila única: una vez que cada casual tiene la suya, lo que haya
+  // quedado en la vieja no vuelve a entrar.
+  await page.evaluate(() => localStorage.setItem("gb_rounds_v2:libre", JSON.stringify([
+    { id: "L3", communityId: "libre", courseId: "inkas", date: "2026-10-18", teams: [], _rev: 1, results: { simple: false, rows: [], breakdown: [] } },
+  ])));
+  await recargar();
+  T("la casual que solo está en la fila vieja NO entra", !(await claves()).includes("gb_rounds_v2:libre:L3"),
+    (await claves()).join(" "));
+  // Pero si NINGUNA tiene su fila, sí se usa para rehacerlas: es la red de seguridad.
+  await page.evaluate(() => Object.keys(localStorage)
+    .filter((k) => k.startsWith("gb_rounds_v2:libre:")).forEach((k) => localStorage.removeItem(k)));
+  await recargar();
+  T("si ninguna tiene su fila, se rehacen desde la vieja", (await claves()).includes("gb_rounds_v2:libre:L3"),
+    (await claves()).join(" "));
+}
+
+console.log("\n=== 7. UNA FECHA NUEVA CAE EN LA FILA DE SU COMUNIDAD ===");
 {
   // Lo mismo, pero con un evento creado desde la pantalla, no inyectado.
   await nav("Comunidades");

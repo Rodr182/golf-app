@@ -1199,7 +1199,10 @@ const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeByIdRev, g
    comunidades a las que uno pertenece. La app sigue trabajando con UNA sola
    lista en memoria: lo único que cambia es cómo se guarda y cómo se lee.
 
-   Las rondas casuales no son de ninguna comunidad: van juntas en ":libre". */
+   Las rondas casuales no son de ninguna comunidad, así que no hay a quién
+   preguntarle si uno puede verlas. Por eso cada una va en su PROPIA fila
+   ("gb_rounds_v2:libre:ev123") y el servidor decide mirando quién jugó: si
+   jugaste la ves, y si no, no te llega. */
 const RAIZ_RONDAS = "gb_rounds_v2";
 const RAIZ_EVENTOS = "gb_events_v1";
 // Las tarjetas de las fechas previas a la app también son de una comunidad.
@@ -1207,19 +1210,24 @@ const RAIZ_EVENTOS = "gb_events_v1";
 // con saber leerlas repartidas; repartirlas es un paso de base de datos.
 const RAIZ_HIST = "gb_histcards_v1";
 const SEPARADAS = { [RAIZ_RONDAS]: mergeByIdRev, [RAIZ_EVENTOS]: mergeEvents };
-const claveComunidad = (raiz, cid) => `${raiz}:${cid || "libre"}`;
-// Qué fusión le toca a una clave, sea la fila única de antes o la de una comunidad.
+const ES_LIBRE = (cid) => !cid || cid === "libre";
+/* En qué fila va cada cosa: la de su comunidad, o una fila propia si es casual. */
+const claveDe = (raiz, x) => (ES_LIBRE(x && x.communityId) ? `${raiz}:libre:${x.id}` : `${raiz}:${x.communityId}`);
+// La fila única de cuando TODAS las casuales iban juntas. Quedó congelada: ya
+// no se escribe, y solo se lee si todavía no existe ninguna fila propia.
+const CLAVE_LIBRE_VIEJA = (raiz) => `${raiz}:libre`;
+// Qué fusión le toca a una clave, sea la fila única de antes o una repartida.
 const mergerDe = (k) => CLOUD_MERGERS[k] || SEPARADAS[String(k).split(":")[0]] || null;
-/* Reparte una lista plana en una fila por comunidad. Cada fila se ordena por
-   id: así dos celulares con las mismas fechas generan exactamente el mismo
-   texto. Sin eso, cada uno creería que el otro cambió algo y se estarían
-   reescribiendo sin parar. El orden en pantalla no depende de esto — todas las
-   vistas ordenan por fecha. */
-function repartirPorComunidad(raiz, lista) {
+/* Reparte una lista plana en filas: una por comunidad, y una por cada ronda
+   casual. Cada fila se ordena por id: así dos celulares con las mismas fechas
+   generan exactamente el mismo texto. Sin eso, cada uno creería que el otro
+   cambió algo y se estarían reescribiendo sin parar. El orden en pantalla no
+   depende de esto — todas las vistas ordenan por fecha. */
+function repartirEnFilas(raiz, lista) {
   const out = {};
   (lista || []).forEach((x) => {
-    if (!x) return;
-    const k = claveComunidad(raiz, x.communityId);
+    if (!x || x.id == null) return;
+    const k = claveDe(raiz, x);
     (out[k] = out[k] || []).push(x);
   });
   Object.values(out).forEach((l) => l.sort((a, b) => String(a.id).localeCompare(String(b.id))));
@@ -3552,7 +3560,12 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
         pairs: autoPairsIds(ids), loanPlayerId: choices[g.id] || g.loanPlayerId, dropPlayerId: g.dropPlayerId,
       };
     });
-    const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date, teams, eventName: event.name };
+    /* `createdBy` viaja también en la fecha guardada. En una ronda casual (sin
+       comunidad) es lo que le permite al servidor saber a quién le pertenece:
+       si quien consolidó no jugó, no estaría en los resultados y se quedaría
+       sin poder guardar su propia ronda. */
+    const evObj = { id: event.id, courseId: event.courseId, communityId: community.id, date: event.date,
+      teams, eventName: event.name, createdBy: event.createdBy || me.id };
     const rules = { rulePct: community.rulePct, tokenValue: community.tokenValue, bet: community.bet, medal: community.medal, regla8: community.regla8, currency: community.currency, regla8Holes: ((community.regla8Map || {})[event.courseId]) || [], multiStroke: !!community.multiStroke };
     const results = simpleMode
       ? computeSimpleRound(JSON.parse(JSON.stringify(evObj)), course, rules)
@@ -5294,8 +5307,19 @@ export default function App() {
      la fusión nunca pisa un valor con uno vacío. Solo se mira si no llegó NI
      UNA fila por comunidad, que es la señal de que algo salió mal. */
   const leerSeparado = async (raiz) => {
-    const filas = await store.getPrefijo(raiz);
+    const todas = await store.getPrefijo(raiz);
     const fusionar = SEPARADAS[raiz];
+    /* La fila donde antes iban juntas TODAS las rondas casuales también quedó
+       congelada, por lo mismo: si se siguiera leyendo, lo viejo volvería a
+       entrar. Solo cuenta mientras no exista ni una fila casual propia, que es
+       el rato entre publicar esta versión y que cada ronda tenga su fila. */
+    const laVieja = CLAVE_LIBRE_VIEJA(raiz);
+    const propias = Object.keys(todas).filter((k) => k !== laVieja);
+    const hayCasualesPropias = propias.some((k) => k.startsWith(laVieja + ":"));
+    const filas = {};
+    propias.forEach((k) => (filas[k] = todas[k]));
+    if (!hayCasualesPropias && todas[laVieja]) filas[laVieja] = todas[laVieja];
+
     const claves = Object.keys(filas).sort();
     if (!claves.length) {
       const vieja = (await store.get(raiz, [])) || [];
@@ -5419,14 +5443,19 @@ export default function App() {
         const map = {}; (globales.data || []).forEach((r) => (map[r.key] = r.value));
         if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeByIdRev(prev, map.gb_players_v2)));
         if (map.gb_comm_v2) setCommunities((prev) => stable(prev, mergeCommunities(prev, map.gb_comm_v2)));
-        // Las fechas y los eventos llegan repartidos: se fusionan fila por fila.
-        const juntar = (filas, fusionar) => (prev) => {
+        /* Las fechas y los eventos llegan repartidos: se fusionan fila por
+           fila. Se saltea la fila vieja donde iban juntas todas las casuales:
+           está congelada, y mezclarla acá devolvería datos viejos. */
+        const juntar = (raiz, filas, fusionar) => (prev) => {
           let out = prev;
-          (filas || []).forEach((r) => { if (Array.isArray(r.value)) out = fusionar(out, r.value); });
+          (filas || []).forEach((r) => {
+            if (r.key === CLAVE_LIBRE_VIEJA(raiz) || !Array.isArray(r.value)) return;
+            out = fusionar(out, r.value);
+          });
           return stable(prev, out);
         };
-        setRounds(juntar(rondas.data, mergeByIdRev));
-        setEvents(juntar(eventos.data, mergeEvents));
+        setRounds(juntar(RAIZ_RONDAS, rondas.data, mergeByIdRev));
+        setEvents(juntar(RAIZ_EVENTOS, eventos.data, mergeEvents));
       } catch {}
     };
     const iv = setInterval(tick, 15000);
@@ -5453,7 +5482,7 @@ export default function App() {
      siguiera escribiendo no se le podía poner llave, y sin llave cualquiera que
      entre puede leerla entera, que es justo lo que se quiere evitar. */
   const persistSeparado = (raiz, lista) => {
-    Object.entries(repartirPorComunidad(raiz, lista)).forEach(([k, v]) => persist(k, v));
+    Object.entries(repartirEnFilas(raiz, lista)).forEach(([k, v]) => persist(k, v));
   };
   useEffect(() => { persistSeparado(RAIZ_RONDAS, roundsAll); }, [roundsAll, canWrite]);
   useEffect(() => { persistSeparado(RAIZ_EVENTOS, eventsAll); }, [eventsAll, canWrite]);
