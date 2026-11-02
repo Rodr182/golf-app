@@ -1,0 +1,279 @@
+# Pone la llave: que el SERVIDOR entregue solo las comunidades de cada uno.
+#
+# POR QUÉ: hasta ahora cualquiera que iniciara sesión podía leer toda la tabla.
+# El filtro por comunidad lo hacía la app en el celular, y un filtro que vive en
+# el celular no es una llave: quien supiera mirar podía ver la plata de una
+# comunidad a la que no pertenece. Esto lo mueve al servidor.
+#
+# QUÉ QUEDA ABIERTO A PROPÓSITO:
+#   - La lista de jugadores (ya sin correos), para poder armar grupos y mostrar
+#     nombres; la de comunidades, para poder buscarlas y postular; el catálogo
+#     de canchas; y el número de "época".
+#   - Las rondas casuales (":libre"), que no son de ninguna comunidad. Ahí falta
+#     trabajo: hoy las ve cualquiera que entre.
+#
+# MODOS (campo "modo"):
+#   mirar     — por defecto. Muestra las reglas de hoy y SIMULA la regla nueva
+#               contra los datos de verdad: qué vería cada persona. No escribe.
+#   APLICAR   — pone la regla. Después vuelve a comprobar; si la comprobación no
+#               sale como debe, la deshace sola y falla.
+#   REVERTIR  — vuelve a dejarlo todo abierto, como estaba.
+name: Permisos por comunidad
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "mirar (no toca nada) · APLICAR · REVERTIR"
+        required: true
+        default: "mirar"
+        type: choice
+        options: [mirar, APLICAR, REVERTIR]
+
+permissions: {}
+
+jobs:
+  permisos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Permisos
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          MODO: ${{ inputs.modo }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() {
+            local resp
+            resp=$(api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')")
+            echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1 \
+              || { echo "ERROR de la base: $(echo "$resp" | head -c 500)" >&2; exit 1; }
+            printf '%s' "$resp"
+          }
+
+          # ---- La regla, escrita una sola vez ----
+          # Se usa igual para crear la política y para simularla, así lo que se
+          # prueba es exactamente lo que se aplica.
+          REGLA="key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
+                 or key like '%:libre'
+                 or split_part(key, ':', 2) = any (public.mis_comunidades())"
+
+          echo "== 1. LAS REGLAS DE HOY =="
+          q "select policyname as nombre, cmd as para, qual as condicion_de_lectura,
+                    with_check as condicion_de_escritura, roles::text as a_quien
+             from pg_policies where schemaname='public' and tablename='collections'
+             order by cmd, policyname;" | jq .
+
+          echo ""
+          echo "== 2. A QUIÉN VAMOS A PROBARLE LA REGLA =="
+          # Uno que sí está en la comunidad con datos y uno que no está en ninguna.
+          gente=$(q "with comunidades as (
+                       select c->>'id' as cid, c->'members' as miembros, c->>'admin' as dueno
+                       from public.collections k, jsonb_array_elements(k.value) c where k.key='gb_comm_v2'),
+                     conDatos as (
+                       select split_part(k.key, ':', 2) as cid, count(*) as filas
+                       from public.collections k where k.key like 'gb_rounds_v2:%'
+                        and split_part(k.key, ':', 2) <> 'libre' group by 1 order by 2 desc limit 1)
+                     select (select cid from conDatos) as comunidad_con_datos,
+                            (select u.id::text from auth.users u, comunidades c
+                              where c.cid = (select cid from conDatos)
+                                and (c.miembros ? u.id::text or c.dueno = u.id::text) limit 1) as adentro,
+                            (select u.id::text from auth.users u
+                              where not exists (select 1 from comunidades c
+                                                 where c.miembros ? u.id::text or c.dueno = u.id::text) limit 1) as afuera;")
+          echo "$gente" | jq .
+          cid=$(echo "$gente" | jq -r '.[0].comunidad_con_datos')
+          adentro=$(echo "$gente" | jq -r '.[0].adentro')
+          afuera=$(echo "$gente" | jq -r '.[0].afuera')
+          [ "$adentro" != "null" ] || { echo "ERROR: no encontré a nadie dentro de la comunidad con datos."; exit 1; }
+          if [ "$afuera" = "null" ]; then
+            echo "AVISO: todas las cuentas están en alguna comunidad; no hay a quién probarle 'desde afuera'."
+          fi
+
+          # Simula la regla contra los datos de verdad, sin tocar permisos:
+          # evalúa la MISMA condición, fila por fila, para un id de persona.
+          simular() {
+            q "with comunidades as (
+                 select c->>'id' as cid from public.collections k, jsonb_array_elements(k.value) c
+                 where k.key='gb_comm_v2'
+                   and (c->'members' ? '$1' or c->>'admin' = '$1'
+                        or coalesce(c->'admins','[]'::jsonb) ? '$1'))
+               select k.key as fila,
+                      (k.key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
+                       or k.key like '%:libre'
+                       or split_part(k.key, ':', 2) in (select cid from comunidades)) as podria_leer
+               from public.collections k order by k.key;"
+          }
+          ver() { echo "$1" | jq -r '.[] | "  \(if .podria_leer then "✅ lee " else "🔒 NO  " end)\(.fila)"'; }
+
+          echo ""
+          echo "== 3. SIMULACIÓN: QUÉ VERÍA CADA UNO CON LA REGLA NUEVA =="
+          echo "-- Alguien DE la comunidad $cid ($adentro):"
+          dentro=$(simular "$adentro"); ver "$dentro"
+          if [ "$afuera" != "null" ]; then
+            echo "-- Alguien que no está en ninguna comunidad ($afuera):"
+            fuera=$(simular "$afuera"); ver "$fuera"
+          fi
+
+          # Lo que tiene que cumplirse, sí o sí.
+          falla=0
+          debe() { if [ "$2" = "$3" ]; then echo "  ✓ $1"; else echo "  ✗ FALLA: $1 (salió $2, debía ser $3)"; falla=1; fi; }
+          echo ""
+          echo "== 4. LO QUE TIENE QUE CUMPLIRSE =="
+          debe "quien está en la comunidad lee sus fechas" \
+            "$(echo "$dentro" | jq -r --arg k "gb_rounds_v2:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "true"
+          debe "y sus eventos" \
+            "$(echo "$dentro" | jq -r --arg k "gb_events_v1:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "true"
+          debe "y sus tarjetas previas" \
+            "$(echo "$dentro" | jq -r --arg k "gb_histcards_v1:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "true"
+          debe "nadie lee las filas únicas de antes (fechas)" \
+            "$(echo "$dentro" | jq -r '[.[]|select(.fila=="gb_rounds_v2")][0].podria_leer')" "false"
+          debe "ni las de eventos" \
+            "$(echo "$dentro" | jq -r '[.[]|select(.fila=="gb_events_v1")][0].podria_leer')" "false"
+          debe "la lista de jugadores sigue abierta" \
+            "$(echo "$dentro" | jq -r '[.[]|select(.fila=="gb_players_v2")][0].podria_leer')" "true"
+          debe "la de comunidades también, para poder postular" \
+            "$(echo "$dentro" | jq -r '[.[]|select(.fila=="gb_comm_v2")][0].podria_leer')" "true"
+          if [ "$afuera" != "null" ]; then
+            debe "quien NO está en la comunidad no lee sus fechas" \
+              "$(echo "$fuera" | jq -r --arg k "gb_rounds_v2:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "false"
+            debe "ni sus eventos" \
+              "$(echo "$fuera" | jq -r --arg k "gb_events_v1:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "false"
+            debe "ni sus tarjetas previas" \
+              "$(echo "$fuera" | jq -r --arg k "gb_histcards_v1:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "false"
+          fi
+          [ "$falla" = "0" ] || { echo ""; echo "⛔ ME DETENGO: la regla no hace lo que debe. No se tocó nada."; exit 1; }
+
+          if [ "$MODO" = "mirar" ]; then
+            echo ""
+            echo "Modo mirar: no se tocó ningún permiso."
+            echo "Para ponerlos, volver a lanzar con modo APLICAR."
+            exit 0
+          fi
+
+          # ---- Las reglas de antes, para poder volver ----
+          abrir() {
+            q "drop policy if exists \"leer solo lo de mis comunidades\" on public.collections;
+               drop policy if exists \"escribir solo lo de mis comunidades\" on public.collections;
+               drop policy if exists \"authenticated can read\" on public.collections;
+               drop policy if exists \"authenticated can insert\" on public.collections;
+               drop policy if exists \"authenticated can update\" on public.collections;
+               create policy \"authenticated can read\" on public.collections
+                 for select to authenticated using (true);
+               create policy \"authenticated can insert\" on public.collections
+                 for insert to authenticated with check (true);
+               create policy \"authenticated can update\" on public.collections
+                 for update to authenticated using (true) with check (true);" > /dev/null
+          }
+
+          if [ "$MODO" = "REVERTIR" ]; then
+            echo ""
+            echo "== REVIRTIENDO: todo abierto otra vez =="
+            abrir
+            q "select policyname as nombre, cmd as para, qual as condicion
+               from pg_policies where schemaname='public' and tablename='collections' order by cmd;" | jq .
+            echo "Listo. Vuelve a estar como antes."
+            exit 0
+          fi
+
+          echo ""
+          echo "== 5. PONIENDO LA REGLA =="
+          # La función lee gb_comm_v2 SIN pasar por los permisos, a propósito: la
+          # regla necesita saber a qué comunidades pertenece uno, y esa lista está
+          # en la misma tabla que la regla protege. Sin esto se muerde la cola.
+          q "create or replace function public.mis_comunidades()
+             returns text[]
+             language sql
+             security definer
+             stable
+             set search_path = public, pg_temp
+             as \$fn\$
+               select coalesce(array_agg(c->>'id'), '{}'::text[])
+               from public.collections k, jsonb_array_elements(k.value) c
+               where k.key = 'gb_comm_v2'
+                 and ( c->'members' ? (select auth.uid()::text)
+                    or c->>'admin' = (select auth.uid()::text)
+                    or coalesce(c->'admins','[]'::jsonb) ? (select auth.uid()::text) );
+             \$fn\$;" > /dev/null
+          q "revoke all on function public.mis_comunidades() from public;
+             grant execute on function public.mis_comunidades() to authenticated;" > /dev/null
+          echo "  función mis_comunidades(): lista"
+
+          q "drop policy if exists \"authenticated can read\" on public.collections;
+             drop policy if exists \"authenticated can insert\" on public.collections;
+             drop policy if exists \"authenticated can update\" on public.collections;
+             drop policy if exists \"leer solo lo de mis comunidades\" on public.collections;
+             drop policy if exists \"escribir solo lo de mis comunidades\" on public.collections;
+             create policy \"leer solo lo de mis comunidades\" on public.collections
+               for select to authenticated using ( ${REGLA} );
+             create policy \"escribir solo lo de mis comunidades\" on public.collections
+               for insert to authenticated with check ( ${REGLA} );
+             create policy \"corregir solo lo de mis comunidades\" on public.collections
+               for update to authenticated using ( ${REGLA} ) with check ( ${REGLA} );" > /dev/null
+          echo "  políticas: listas"
+
+          echo ""
+          echo "== 6. COMPROBANDO DE VERDAD, HACIENDO DE CUENTA QUE SOY CADA UNO =="
+          # Esto no simula: cambia de rol y pregunta a la tabla como lo haría la
+          # app, así que lo que sale es lo que la app va a ver.
+          comoSi() {
+            q "begin;
+               create temp table visto(key text);
+               grant all on visto to authenticated;
+               set local role authenticated;
+               set local request.jwt.claims = '{\"sub\":\"$1\",\"role\":\"authenticated\"}';
+               insert into visto select key from public.collections;
+               reset role;
+               commit;
+               select key from visto order by key;"
+          }
+          malo=0
+          echo "-- Como alguien DE la comunidad ($adentro):"
+          realDentro=$(comoSi "$adentro") || malo=1
+          echo "$realDentro" | jq -r '.[] | "  ✅ \(.key)"'
+          if [ "$afuera" != "null" ]; then
+            echo "-- Como alguien de afuera ($afuera):"
+            realFuera=$(comoSi "$afuera") || malo=1
+            echo "$realFuera" | jq -r '.[] | "  ✅ \(.key)"'
+          fi
+
+          if [ "$malo" = "0" ]; then
+            tiene() { echo "$1" | jq -e --arg k "$2" 'any(.[]; .key==$k)' > /dev/null && echo true || echo false; }
+            falla=0
+            echo ""
+            debe "de verdad lee las fechas de su comunidad" "$(tiene "$realDentro" "gb_rounds_v2:$cid")" "true"
+            debe "de verdad NO lee la fila única de fechas" "$(tiene "$realDentro" "gb_rounds_v2")" "false"
+            debe "de verdad lee la lista de jugadores" "$(tiene "$realDentro" "gb_players_v2")" "true"
+            if [ "$afuera" != "null" ]; then
+              debe "de verdad NO lee las fechas de una comunidad ajena" "$(tiene "$realFuera" "gb_rounds_v2:$cid")" "false"
+              debe "ni sus eventos" "$(tiene "$realFuera" "gb_events_v1:$cid")" "false"
+            fi
+            if [ "$falla" != "0" ]; then
+              echo ""
+              echo "⛔ LA COMPROBACIÓN NO SALIÓ: deshaciendo y dejando todo como estaba."
+              abrir
+              echo "Listo, revertido. No se quedó a medias."
+              exit 1
+            fi
+          else
+            echo "AVISO: no se pudo hacer la comprobación cambiando de rol."
+            echo "La simulación del punto 3 sí pasó, pero esta prueba es la buena."
+            echo "Deshaciendo por precaución, para no dejar permisos sin comprobar."
+            abrir
+            exit 1
+          fi
+
+          echo ""
+          echo "== 7. CÓMO QUEDÓ =="
+          q "select policyname as nombre, cmd as para, qual as condicion
+             from pg_policies where schemaname='public' and tablename='collections' order by cmd, policyname;" | jq .
+          echo ""
+          echo "Para volver atrás en cualquier momento: lanzar este mismo flujo con modo REVERTIR."
