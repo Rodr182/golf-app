@@ -171,9 +171,13 @@ function computeEvent(event, course, rules) {
   const si = course.strokes;
   const bet = rules.bet;
   // Regla 8 (opcional): hoyos donde el stroke solo empata. Aplica a concursos
-  // individuales. Los hoyos los define la COMUNIDAD por cancha (regla8Holes);
-  // course.tieOnlyHoles queda como respaldo de datos antiguos.
-  const tieHoles = (rules.regla8Holes && rules.regla8Holes.length ? rules.regla8Holes : course.tieOnlyHoles) || [];
+  // individuales. Los hoyos los define la COMUNIDAD, CANCHA POR CANCHA: los
+  // índices de dificultad cambian de una cancha a otra, así que unos hoyos
+  // marcados para Los Inkas no significan nada en otra. Si la cancha del día no
+  // tiene hoyos marcados, la Regla 8 simplemente no aplica — antes había un
+  // respaldo que tomaba los de la propia cancha y podía cambiar las cuentas sin
+  // que nadie lo hubiera pedido.
+  const tieHoles = (rules.regla8Holes && rules.regla8Holes.length ? rules.regla8Holes : []) || [];
   const r8 = rules.regla8 && tieHoles.length
     ? { holes: new Set(tieHoles.map((h) => h - 1)), pars: course.pars || [] }
     : null;
@@ -2704,6 +2708,42 @@ function Communities({ communities, me, onOpen, onCreate }) {
   );
 }
 
+/* Formulario de sugerencias: una cancha que falta o una modalidad nueva. */
+function SugerenciaForm({ onEnviar }) {
+  const [tipo, setTipo] = useState("cancha");
+  const [texto, setTexto] = useState("");
+  const [enviada, setEnviada] = useState(false);
+  const mandar = () => {
+    if (!texto.trim()) return;
+    onEnviar(tipo, texto);
+    setTexto(""); setEnviada(true);
+    setTimeout(() => setEnviada(false), 3000);
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["cancha", "⛳ Una cancha"], ["modalidad", "🎲 Una modalidad"]].map(([k, l]) => (
+          <button key={k} onClick={() => setTipo(k)} style={{
+            border: `1.5px solid ${tipo === k ? C.green : C.line}`, cursor: "pointer", borderRadius: 10,
+            padding: "7px 14px", fontWeight: 700, fontSize: 13, fontFamily: "'Spline Sans',sans-serif",
+            background: tipo === k ? C.green : "#fff", color: tipo === k ? C.cream : C.green }}>{l}</button>
+        ))}
+      </div>
+      <Field label={tipo === "cancha" ? "¿Qué cancha?" : "¿Qué modalidad?"}
+        hint={tipo === "cancha" ? "El nombre y dónde queda. Si tienes los pares y los índices, mejor."
+                                : "Cómo se juega y cómo se cobra, con un ejemplo si puedes."}>
+        <textarea style={{ ...inputStyle, minHeight: 90, resize: "vertical", fontFamily: "'Spline Sans',sans-serif" }}
+          value={texto} onChange={(e) => setTexto(e.target.value)}
+          placeholder={tipo === "cancha" ? "Ej: Country Club Villa, en Chorrillos. Par 72." : "Ej: Skins — el hoyo se acumula si hay empate."} />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        {enviada ? <span style={{ color: C.green, fontWeight: 700, fontSize: 13 }}>✓ Enviada. Le llega a los administradores.</span> : <span />}
+        <Btn disabled={!texto.trim()} onClick={mandar}>Enviar sugerencia</Btn>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- PERFIL / ESTADÍSTICAS ---------------- */
 /* Evolución del hándicap: una línea de la fecha más antigua a la más reciente.
    Ojo con el eje: en golf BAJAR de hándicap es mejorar, así que el eje va al
@@ -2768,6 +2808,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
   const [msg, setMsg] = useState("");
   const [pw, setPw] = useState({ a: "", b: "" });
   const [pwMsg, setPwMsg] = useState("");
+  const [cambiandoPw, setCambiandoPw] = useState(false);
   const openEdit = () => { setF({ name: me.name || "", last: me.last || "", last2: me.last2 || "", birth: me.birth || "", hcp: me.hcp ?? "" }); setMsg(""); setEditing(true); };
   const save = async () => {
     if (!f.name.trim()) { setMsg("El nombre no puede quedar vacío."); return; }
@@ -2780,7 +2821,7 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
     if (pw.a !== pw.b) { setPwMsg("Las contraseñas no coinciden."); return; }
     const err = await onChangePassword(pw.a);
     setPwMsg(err || "✓ Contraseña actualizada.");
-    if (!err) setPw({ a: "", b: "" });
+    if (!err) { setPw({ a: "", b: "" }); setTimeout(() => setCambiandoPw(false), 1500); }
   };
   const byComm = playerMoneyByCommunity(me.id, rounds, communities);
   const porFechaDesc = masRecientePrimero;
@@ -2847,15 +2888,34 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
             <Btn onClick={save}>Guardar cambios</Btn>
           </div>
 
-          {onChangePassword && (
-            <div style={{ borderTop: `1px solid ${C.line}`, marginTop: 18, paddingTop: 14 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: C.green, marginBottom: 10 }}>Cambiar contraseña</div>
+        </Card>
+      )}
+
+      {/* La contraseña vivía escondida DENTRO de "Editar mis datos": nadie la
+          encontraba y todos terminaban pidiendo el correo de recuperación, que
+          es justo lo que falla. Ahora está a la vista, en su propia tarjeta. */}
+      {onChangePassword && (
+        <Card style={{ padding: 18, marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: C.green }}>🔑 Mi contraseña</div>
+              <div style={{ fontSize: 12.5, color: "#7a8780", marginTop: 2 }}>
+                Cámbiala desde aquí cuando quieras. Es más rápido y seguro que pedir el correo de recuperación.
+              </div>
+            </div>
+            {!cambiandoPw && <Btn variant="ghost" onClick={() => { setCambiandoPw(true); setPwMsg(""); }}>Cambiar contraseña</Btn>}
+          </div>
+          {cambiandoPw && (
+            <div style={{ marginTop: 14 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <Field label="Nueva contraseña"><input style={inputStyle} type="password" value={pw.a} onChange={(e) => setPw({ ...pw, a: e.target.value })} /></Field>
+                <Field label="Nueva contraseña" hint="Mínimo 6 caracteres"><input style={inputStyle} type="password" value={pw.a} onChange={(e) => setPw({ ...pw, a: e.target.value })} /></Field>
                 <Field label="Repetir"><input style={inputStyle} type="password" value={pw.b} onChange={(e) => setPw({ ...pw, b: e.target.value })} /></Field>
               </div>
               {pwMsg && <div style={{ color: pwMsg.startsWith("✓") ? C.green : C.red, fontSize: 13.5, fontWeight: 600, marginBottom: 10 }}>{pwMsg}</div>}
-              <Btn variant="ghost" disabled={!pw.a || !pw.b} onClick={savePassword}>Actualizar contraseña</Btn>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <Btn variant="ghost" onClick={() => { setCambiandoPw(false); setPw({ a: "", b: "" }); setPwMsg(""); }}>Cancelar</Btn>
+                <Btn disabled={!pw.a || !pw.b} onClick={savePassword}>Actualizar contraseña</Btn>
+              </div>
             </div>
           )}
         </Card>
@@ -3700,6 +3760,28 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
             </div>
           </div>
 
+          {/* La Regla 8 se marca CANCHA POR CANCHA, porque los índices de
+              dificultad cambian de una a otra. Si está activa pero hoy se juega
+              en una cancha sin hoyos marcados, no aplica — y eso hay que decirlo
+              antes de empezar, no descubrirlo al ver las cuentas. */}
+          {(() => {
+            if (!community.regla8) return null;
+            const hoyos = ((community.regla8Map || {})[event.courseId]) || [];
+            return (
+              <Card style={{ padding: 12, marginBottom: 12, border: `1.5px solid ${hoyos.length ? C.line : C.gold}` }}>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, color: hoyos.length ? "#5c6b63" : "#5c6b63" }}>
+                  {hoyos.length ? (
+                    <><b style={{ color: C.green }}>Regla 8 activa</b> en {course?.name}: hoyos <b>{hoyos.join(", ")}</b>. Ahí el stroke solo sirve para llegar al par.</>
+                  ) : (
+                    <><b style={{ color: C.gold }}>⚠️ La Regla 8 NO aplica hoy.</b> Está activada en la comunidad, pero nadie marcó en qué hoyos
+                      aplica para <b>{course?.name || "esta cancha"}</b>. Se marcan por cancha, porque los índices de dificultad cambian de una a otra.
+                      {admin && <> Un administrador puede marcarlos en <b>Comunidad → Reglas</b>.</>}</>
+                  )}
+                </div>
+              </Card>
+            );
+          })()}
+
           {/* HÁNDICAPS DEL DÍA: se confirman aquí, al momento de anotar */}
           <Card style={{ padding: 12, marginBottom: 12, border: editHcps ? `1.5px solid ${C.gold}` : `1px solid ${C.line}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -4311,6 +4393,21 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
   };
   const unblock = (pid) => onUpdateCommunity({ ...community, blocked: blocked.filter((x) => x !== pid) });
 
+  /* SUGERENCIAS: cualquier miembro puede proponer una cancha o una modalidad y
+     le llega al administrador, que es quien puede aplicarlas. Antes eso se
+     hablaba por WhatsApp y se perdía. */
+  const sugerencias = community.sugerencias || [];
+  const enviarSugerencia = (tipo, texto) => {
+    const nueva = { id: "s" + Date.now(), tipo, texto: texto.trim(), de: me.id, fecha: new Date().toISOString() };
+    onUpdateCommunity({ ...community, sugerencias: [nueva, ...sugerencias] });
+  };
+  const cerrarSugerencia = (sid) => onUpdateCommunity({
+    ...community,
+    sugerencias: sugerencias.map((x) => (x.id === sid ? { ...x, hecha: true, cerradaPor: me.id } : x)),
+  });
+  const borrarSugerencia = (sid) => onUpdateCommunity({ ...community, sugerencias: sugerencias.filter((x) => x.id !== sid) });
+  const sugerenciasAbiertas = sugerencias.filter((x) => !x.hecha);
+
   const Tab = ({ id, label }) => (
     <button onClick={() => { setTab(id); setOpenRound(null); setManagingEventId(null); }} style={{
       border: "none", cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 700, fontSize: 14,
@@ -4365,6 +4462,7 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
         <Tab id="ranking" label="Ranking" />
         <Tab id="caracara" label="Cara a cara" />
         {iAmAdmin && <Tab id="pozo" label="Pozo" />}
+        <Tab id="sugerencias" label={`Sugerencias${iAmAdmin && sugerenciasAbiertas.length ? " · " + sugerenciasAbiertas.length + "💡" : ""}`} />
         <Tab id="eventos" label={`Eventos (${commEvents.length})`} />
         <Tab id="resultados" label={`Resultados (${commRounds.length})`} />
       </div>
@@ -4714,6 +4812,49 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
             </div>
           );
         })()
+      )}
+
+      {tab === "sugerencias" && (
+        <div>
+          <Card style={{ padding: 18, marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: C.green, marginBottom: 4 }}>💡 Proponer algo</div>
+            <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 14, lineHeight: 1.55 }}>
+              ¿Falta una cancha donde juegan? ¿Se les ocurre otra modalidad de apuesta?
+              Déjalo acá y le llega a los administradores de {community.name}.
+            </div>
+            <SugerenciaForm onEnviar={enviarSugerencia} />
+          </Card>
+
+          {sugerencias.length === 0 ? (
+            <Card style={{ padding: 18, color: "#7a8780", fontSize: 13.5 }}>Todavía no hay sugerencias.</Card>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {sugerencias.map((x) => (
+                <Card key={x.id} style={{ padding: 14, opacity: x.hecha ? 0.6 : 1 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 200 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 5 }}>
+                        <Chip tone={x.tipo === "cancha" ? "green" : "gold"}>{x.tipo === "cancha" ? "⛳ Cancha" : "🎲 Modalidad"}</Chip>
+                        {x.hecha && <Chip tone="neutral">Aplicada</Chip>}
+                      </div>
+                      <div style={{ fontSize: 14, lineHeight: 1.5 }}>{x.texto}</div>
+                      <div style={{ fontSize: 11.5, color: "#9aa69e", marginTop: 5 }}>
+                        {resolveName(x.de, players)} · {fechaCorta(x.fecha)}
+                      </div>
+                    </div>
+                    {iAmAdmin && (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {!x.hecha && <Btn variant="ghost" onClick={() => cerrarSugerencia(x.id)}>Marcar hecha</Btn>}
+                        <button onClick={() => { if (window.confirm("¿Borrar esta sugerencia?")) borrarSugerencia(x.id); }}
+                          style={{ border: `1.5px solid ${C.line}`, background: "transparent", color: "#9aa69e", cursor: "pointer", borderRadius: 9, padding: "6px 12px", fontWeight: 600, fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif" }}>Borrar</button>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {tab === "eventos" && (

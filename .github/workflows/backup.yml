@@ -57,10 +57,18 @@ jobs:
           echo "Colecciones respaldadas:"
           jq -r '.[] | "  \(.key)\t\(.value | if type=="array" then length else 1 end) elemento(s)"' "copia/collections-$fecha.json"
 
-          # Las cuentas no se respaldan aquí (las gestiona Supabase Auth),
-          # pero se deja constancia de cuántas había.
-          q "select count(*) as cuentas from auth.users;" > "copia/cuentas-$fecha.json"
-          echo "Cuentas: $(jq -r '.[0].cuentas' "copia/cuentas-$fecha.json")"
+          # Las cuentas: se guarda QUIÉN tiene cuenta, no solo cuántas. Si el
+          # proyecto se perdiera, con esto se sabe a quién hay que volver a dar
+          # de alta y con qué correo — sin eso habría que preguntarle a cada uno.
+          # La contraseña NO se guarda: en la base solo hay un resumen
+          # irreversible, y además no tendría por qué salir de ahí. Al restaurar,
+          # cada uno entra con "olvidé mi contraseña".
+          q "select id, email, created_at, last_sign_in_at,
+                    raw_user_meta_data - 'hcp' as datos_del_perfil
+             from auth.users order by created_at;" > "copia/cuentas-$fecha.json"
+          echo "Cuentas respaldadas: $(jq 'length' "copia/cuentas-$fecha.json")"
+          jq -e 'type=="array" and length>0' "copia/cuentas-$fecha.json" >/dev/null \
+            || { echo "ERROR: el respaldo de cuentas salió vacío o con error:"; head -c 300 "copia/cuentas-$fecha.json"; exit 1; }
 
       - name: Guardar la copia
         uses: actions/upload-artifact@v4
