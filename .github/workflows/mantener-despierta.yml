@@ -1,0 +1,111 @@
+# Mantiene el proyecto despierto para que Supabase no lo pause.
+#
+# En el plan gratuito, un proyecto sin actividad se pausa solo a los 7 días y la
+# app deja de funcionar para todos. Pasó el 2 de noviembre: la última fecha fue
+# el 24 de octubre y nadie entró en nueve días.
+#
+# Esto le manda un saludo dos veces por semana (lunes y jueves, nunca más de 4
+# días entre uno y otro) para que cuente como actividad.
+#
+# OJO: esto EVITA la pausa, no la deshace. Un proyecto ya pausado solo se
+# despierta a mano desde supabase.com. Si lo encuentra pausado, avisa.
+#
+# El saludo principal va con la clave pública de la app (la misma que usa
+# cualquiera que abra la página), así que sigue funcionando aunque el token de
+# administrador caduque.
+name: Mantener la app despierta
+
+on:
+  schedule:
+    - cron: "0 9 * * 1,4"   # lunes y jueves 09:00 UTC (04:00 en Lima)
+  workflow_dispatch:
+
+permissions:
+  issues: write   # para avisar si el proyecto se pausó
+
+jobs:
+  saludar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Saludar al proyecto
+        id: saludo
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          url=$(grep -o 'https://[a-z0-9]*\.supabase\.co' frontend/src/config.js | head -1)
+          key=$(grep -o 'eyJ[A-Za-z0-9._-]*' frontend/src/config.js | head -1)
+          [ -n "$url" ] && [ -n "$key" ] || { echo "ERROR: no encontré la configuración de Supabase"; exit 1; }
+
+          # 1) Tráfico de verdad contra el proyecto, igual que lo haría un celular.
+          http=$(curl -sS -m 30 -o /tmp/ping.json -w '%{http_code}' "$url/auth/v1/settings" -H "apikey: $key" || echo "000")
+          echo "Saludo a $url -> HTTP $http"
+
+          if [ "$http" = "200" ]; then
+            echo "✅ El proyecto está despierto y respondiendo."
+            echo "pausado=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Respuesta: $(head -c 300 /tmp/ping.json 2>/dev/null || echo '(vacía)')"
+          echo ""
+          echo "⚠️ El proyecto NO respondió como debería."
+
+          # 2) Si no respondió, se le pregunta al panel de Supabase por qué.
+          if [ -n "${SB_TOKEN:-}" ]; then
+            api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+            proyectos=$(api https://api.supabase.com/v1/projects || echo '{}')
+            if echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+              estado=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].status // "(desconocido)"')
+              echo "Estado según Supabase: $estado"
+              echo "estado=$estado" >> "$GITHUB_OUTPUT"
+            else
+              echo "(no se pudo leer el estado: el token no responde)"
+            fi
+          fi
+          echo "pausado=si" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Avisar que la app está caída
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const titulo = "🔴 La app no responde — puede estar pausada";
+            const cuerpo = [
+              "El saludo automático al proyecto de Supabase no obtuvo respuesta.",
+              "Mientras siga así, **nadie puede entrar a la app**.",
+              "",
+              `Revisado: ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+              `Detalle: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              "",
+              "## Qué hacer",
+              "",
+              "Si el proyecto está pausado, **solo se puede despertar a mano**:",
+              "",
+              "1. Entrar a supabase.com con la cuenta dueña del proyecto.",
+              "2. Abrir el proyecto **Machetero**, que aparecerá marcado como pausado.",
+              "3. Darle a **Restore project** y esperar entre 2 y 5 minutos.",
+              "",
+              "No se pierde nada: pausado no es borrado, la base queda intacta.",
+              "",
+              "Para que deje de pasar, el plan de pago de Supabase quita la pausa por completo.",
+              "",
+              "Cierra este aviso cuando la app vuelva a responder.",
+            ].join("\n");
+            const abiertos = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: "open", labels: "app-caida",
+            });
+            if (abiertos.data.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: abiertos.data[0].number, body: cuerpo,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: titulo, body: cuerpo, labels: ["app-caida"],
+              });
+            }

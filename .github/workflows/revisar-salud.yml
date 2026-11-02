@@ -13,7 +13,8 @@ on:
   schedule:
     - cron: "0 7 * * 1"   # lunes 07:00 UTC (02:00 en Lima)
 
-permissions: {}
+permissions:
+  issues: write   # para avisar si algo se salió de rango
 
 jobs:
   salud:
@@ -41,11 +42,13 @@ jobs:
           echo "== El proyecto =="
           echo "$proyecto" | jq '{ nombre: .name, estado: .status, region: .region, creado: .created_at }'
           estado=$(echo "$proyecto" | jq -r '.status')
+          malo=""
           if [ "$estado" != "ACTIVE_HEALTHY" ]; then
             echo ""
             echo "⚠️ EL PROYECTO NO ESTÁ SANO (estado: $estado)."
             echo "   Si dice PAUSED o INACTIVE, la app NO funciona para nadie."
             echo "   Se despierta desde supabase.com, entrando al proyecto."
+            malo="el proyecto está en estado $estado"
           fi
 
           echo ""
@@ -82,3 +85,48 @@ jobs:
                     (now() - max(updated_at)) as hace_cuanto
              from public.collections;"
           echo "   En el plan gratuito, una semana entera sin actividad pausa el proyecto."
+
+          # Revisar y callarse no sirve de nada: el 2 de noviembre esta revisión
+          # vio el proyecto pausado y nadie se enteró. Si algo está mal, falla.
+          if [ -n "$malo" ]; then
+            echo ""
+            echo "RESULTADO: $malo"
+            exit 1
+          fi
+          echo ""
+          echo "RESULTADO: todo en orden."
+
+      - name: Avisar si algo anda mal
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const titulo = "🔴 La revisión semanal encontró un problema";
+            const cuerpo = [
+              "La revisión de salud del servicio no terminó bien.",
+              "",
+              `Revisado: ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+              `Detalle: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              "",
+              "Lo más común es que el proyecto de Supabase se haya pausado por",
+              "inactividad. En ese caso **nadie puede entrar a la app** hasta que",
+              "se despierte a mano: supabase.com -> proyecto Machetero -> Restore project.",
+              "",
+              "No se pierde nada: pausado no es borrado.",
+              "",
+              "Cierra este aviso cuando esté resuelto.",
+            ].join("\n");
+            const abiertos = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: "open", labels: "app-caida",
+            });
+            if (abiertos.data.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: abiertos.data[0].number, body: cuerpo,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: titulo, body: cuerpo, labels: ["app-caida"],
+              });
+            }
