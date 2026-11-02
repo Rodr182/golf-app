@@ -67,17 +67,37 @@ jobs:
 
           echo ""
           echo "== Qué tan grande es lo que cada celular sincroniza =="
-          # Las cuatro colecciones que la app baja cada 15 segundos. Si esto crece
-          # mucho, la app se vuelve lenta y gasta datos del celular de cada uno.
           q "select key,
                     pg_size_pretty(pg_column_size(value)::bigint) as peso,
                     case when jsonb_typeof(value)='array' then jsonb_array_length(value) else 1 end as elementos,
                     updated_at
              from public.collections order by pg_column_size(value) desc;"
           echo ""
-          q "select pg_size_pretty(sum(pg_column_size(value))::bigint) as baja_cada_celular_cada_15s
-             from public.collections
-             where key in ('gb_events_v1','gb_rounds_v2','gb_players_v2','gb_comm_v2');"
+          # OJO: esto NO es la suma de todo. Antes lo era, y mentía por mucho —
+          # seguía contando las filas congeladas (las que no llevan ":"), que ya
+          # nadie descarga, y contando todo como si se pidiera cada 15 segundos.
+          # Ahora cada cosa tiene su ritmo: los eventos en cada vuelta, las
+          # fechas cada 2 minutos, los jugadores y las comunidades cada minuto.
+          # Se calcula para alguien de la comunidad más grande, que es el peor caso.
+          q "with grande as (
+               select split_part(key, ':', 2) as cid from public.collections
+               where key like 'gb_rounds_v2:%' and split_part(key, ':', 2) <> 'libre'
+               order by pg_column_size(value) desc limit 1),
+             mias as (
+               select key, pg_column_size(value)::bigint as bytes,
+                      case when key like 'gb_events_v1:%' then 1.0        -- cada vuelta
+                           when key like 'gb_rounds_v2:%' then 1.0/8      -- cada 2 minutos
+                           when key in ('gb_players_v2','gb_comm_v2') then 1.0/4  -- cada minuto
+                           else 0 end as veces_por_vuelta                 -- las tarjetas previas: solo al entrar
+               from public.collections
+               where key in ('gb_players_v2','gb_comm_v2')
+                  or key like '%:' || (select cid from grande))
+             select pg_size_pretty(round(sum(bytes * veces_por_vuelta))::bigint) as baja_cada_celular_cada_15s,
+                    pg_size_pretty(round(sum(bytes * veces_por_vuelta) * 240)::bigint) as por_hora_con_la_app_abierta
+             from mias;"
+          # Y cuánto hay congelado, que es lo que ya NO se descarga.
+          q "select pg_size_pretty(sum(pg_column_size(value))::bigint) as congelado_que_ya_no_se_baja
+             from public.collections where key not like '%:%';"
 
           echo ""
           echo "== Actividad (para que el proyecto no se pause solo) =="
