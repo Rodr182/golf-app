@@ -15,6 +15,9 @@
 # MODOS (campo "modo"):
 #   mirar     — por defecto. Muestra las reglas de hoy y SIMULA la regla nueva
 #               contra los datos de verdad: qué vería cada persona. No escribe.
+#   probar    — comprueba las reglas que están puestas AHORA, haciendo de cuenta
+#               que es cada persona: qué puede leer y qué puede guardar. No
+#               cambia ningún permiso ni ningún dato.
 #   APLICAR   — pone la regla. Después vuelve a comprobar; si la comprobación no
 #               sale como debe, la deshace sola y falla.
 #   REVERTIR  — vuelve a dejarlo todo abierto, como estaba.
@@ -24,11 +27,11 @@ on:
   workflow_dispatch:
     inputs:
       modo:
-        description: "mirar (no toca nada) · APLICAR · REVERTIR"
+        description: "mirar · probar (comprueba lo puesto) · APLICAR · REVERTIR"
         required: true
         default: "mirar"
         type: choice
-        options: [mirar, APLICAR, REVERTIR]
+        options: [mirar, probar, APLICAR, REVERTIR]
 
 permissions: {}
 
@@ -184,6 +187,82 @@ jobs:
             exit 0
           fi
 
+          # ---- La comprobación de verdad ----
+          # Esto no simula: cambia de rol y le pregunta a la tabla igual que lo
+          # haría la app, así que lo que sale es lo que la app va a ver y a poder
+          # guardar. Devuelve 1 si algo no cumple; no toca ningún permiso.
+          comoSi() {
+            q "begin;
+               create temp table visto(key text);
+               grant all on visto to authenticated;
+               set local role authenticated;
+               set local request.jwt.claims = '{\"sub\":\"$1\",\"role\":\"authenticated\"}';
+               insert into visto select key from public.collections;
+               reset role;
+               commit;
+               select key from visto order by key;"
+          }
+          # ¿Puede GUARDAR en una fila? Se hace el cambio más inofensivo que
+          # existe (dejar la fecha de modificación como estaba) y se mira a
+          # cuántas filas llegó: 0 = los permisos no lo dejaron. Esto es lo que
+          # no se puede equivocar — si falla, un anotador no puede guardar.
+          puedeGuardar() {
+            q "begin;
+               create temp table escribio(n int);
+               grant all on escribio to authenticated;
+               set local role authenticated;
+               set local request.jwt.claims = '{\"sub\":\"$1\",\"role\":\"authenticated\"}';
+               with u as (update public.collections set updated_at = updated_at where key = '$2' returning 1)
+               insert into escribio select count(*) from u;
+               reset role;
+               commit;
+               select (n > 0) as pudo from escribio;" | jq -r '.[0].pudo'
+          }
+
+          comprobar() {
+            local malo=0 realDentro realFuera
+            echo ""
+            echo "== COMPROBANDO DE VERDAD, HACIENDO DE CUENTA QUE SOY CADA UNO =="
+            echo "-- Qué LEE alguien DE la comunidad ($adentro):"
+            realDentro=$(comoSi "$adentro") || return 1
+            echo "$realDentro" | jq -r '.[] | "  ✅ \(.key)"'
+            if [ "$afuera" != "null" ]; then
+              echo "-- Qué LEE alguien de afuera ($afuera):"
+              realFuera=$(comoSi "$afuera") || return 1
+              echo "$realFuera" | jq -r '.[] | "  ✅ \(.key)"'
+            fi
+            tiene() { echo "$1" | jq -e --arg k "$2" 'any(.[]; .key==$k)' > /dev/null && echo true || echo false; }
+            falla=0
+            echo ""
+            debe "de verdad lee las fechas de su comunidad" "$(tiene "$realDentro" "gb_rounds_v2:$cid")" "true"
+            debe "de verdad lee sus eventos" "$(tiene "$realDentro" "gb_events_v1:$cid")" "true"
+            debe "de verdad NO lee la fila única de fechas" "$(tiene "$realDentro" "gb_rounds_v2")" "false"
+            debe "de verdad lee la lista de jugadores" "$(tiene "$realDentro" "gb_players_v2")" "true"
+            if [ "$afuera" != "null" ]; then
+              debe "de verdad NO lee las fechas de una comunidad ajena" "$(tiene "$realFuera" "gb_rounds_v2:$cid")" "false"
+              debe "ni sus eventos" "$(tiene "$realFuera" "gb_events_v1:$cid")" "false"
+            fi
+            echo ""
+            echo "-- Y lo que no se puede equivocar: GUARDAR"
+            debe "un anotador de la comunidad puede guardar su fecha" "$(puedeGuardar "$adentro" "gb_rounds_v2:$cid")" "true"
+            debe "y el evento que está anotando" "$(puedeGuardar "$adentro" "gb_events_v1:$cid")" "true"
+            debe "cualquiera puede guardar su propia ficha de jugador" "$(puedeGuardar "$adentro" "gb_players_v2")" "true"
+            debe "y postular a una comunidad" "$(puedeGuardar "$adentro" "gb_comm_v2")" "true"
+            if [ "$afuera" != "null" ]; then
+              debe "quien no es de la comunidad NO puede tocarle sus fechas" "$(puedeGuardar "$afuera" "gb_rounds_v2:$cid")" "false"
+              debe "ni sus eventos" "$(puedeGuardar "$afuera" "gb_events_v1:$cid")" "false"
+            fi
+            [ "$falla" = "0" ] || malo=1
+            return $malo
+          }
+
+          if [ "$MODO" = "probar" ]; then
+            comprobar || { echo ""; echo "⛔ LAS REGLAS PUESTAS NO HACEN LO QUE DEBEN."; exit 1; }
+            echo ""
+            echo "Modo probar: no se tocó ningún permiso. Todo cumple."
+            exit 0
+          fi
+
           echo ""
           echo "== 5. PONIENDO LA REGLA =="
           # La función lee gb_comm_v2 SIN pasar por los permisos, a propósito: la
@@ -220,54 +299,11 @@ jobs:
                for update to authenticated using ( ${REGLA} ) with check ( ${REGLA} );" > /dev/null
           echo "  políticas: listas"
 
-          echo ""
-          echo "== 6. COMPROBANDO DE VERDAD, HACIENDO DE CUENTA QUE SOY CADA UNO =="
-          # Esto no simula: cambia de rol y pregunta a la tabla como lo haría la
-          # app, así que lo que sale es lo que la app va a ver.
-          comoSi() {
-            q "begin;
-               create temp table visto(key text);
-               grant all on visto to authenticated;
-               set local role authenticated;
-               set local request.jwt.claims = '{\"sub\":\"$1\",\"role\":\"authenticated\"}';
-               insert into visto select key from public.collections;
-               reset role;
-               commit;
-               select key from visto order by key;"
-          }
-          malo=0
-          echo "-- Como alguien DE la comunidad ($adentro):"
-          realDentro=$(comoSi "$adentro") || malo=1
-          echo "$realDentro" | jq -r '.[] | "  ✅ \(.key)"'
-          if [ "$afuera" != "null" ]; then
-            echo "-- Como alguien de afuera ($afuera):"
-            realFuera=$(comoSi "$afuera") || malo=1
-            echo "$realFuera" | jq -r '.[] | "  ✅ \(.key)"'
-          fi
-
-          if [ "$malo" = "0" ]; then
-            tiene() { echo "$1" | jq -e --arg k "$2" 'any(.[]; .key==$k)' > /dev/null && echo true || echo false; }
-            falla=0
+          if ! comprobar; then
             echo ""
-            debe "de verdad lee las fechas de su comunidad" "$(tiene "$realDentro" "gb_rounds_v2:$cid")" "true"
-            debe "de verdad NO lee la fila única de fechas" "$(tiene "$realDentro" "gb_rounds_v2")" "false"
-            debe "de verdad lee la lista de jugadores" "$(tiene "$realDentro" "gb_players_v2")" "true"
-            if [ "$afuera" != "null" ]; then
-              debe "de verdad NO lee las fechas de una comunidad ajena" "$(tiene "$realFuera" "gb_rounds_v2:$cid")" "false"
-              debe "ni sus eventos" "$(tiene "$realFuera" "gb_events_v1:$cid")" "false"
-            fi
-            if [ "$falla" != "0" ]; then
-              echo ""
-              echo "⛔ LA COMPROBACIÓN NO SALIÓ: deshaciendo y dejando todo como estaba."
-              abrir
-              echo "Listo, revertido. No se quedó a medias."
-              exit 1
-            fi
-          else
-            echo "AVISO: no se pudo hacer la comprobación cambiando de rol."
-            echo "La simulación del punto 3 sí pasó, pero esta prueba es la buena."
-            echo "Deshaciendo por precaución, para no dejar permisos sin comprobar."
+            echo "⛔ LA COMPROBACIÓN NO SALIÓ: deshaciendo y dejando todo como estaba."
             abrir
+            echo "Listo, revertido. No se quedó a medias."
             exit 1
           fi
 
