@@ -264,6 +264,6 @@ jobs:
                 or c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%' or c.key like 'gb_histcards_v1:%'
              order by c.key;" | jq -r '.[] | "  \(.key)\t\(.peso)\t\(.elementos) elemento(s)"'
           echo ""
-          echo "Las filas de antes siguen ahí a propósito: la app las lee y las"
-          echo "escribe igual que siempre, así que se puede volver atrás sin perder"
-          echo "nada. Quitarlas es el último paso, cuando los permisos ya estén puestos."
+          echo "Las filas únicas de siempre (sin ':') quedan ahí a propósito: la app"
+          echo "ya no las usa y los permisos no las entregan a nadie, así que sirven"
+          echo "de respaldo congelado sin filtrar nada."
