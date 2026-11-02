@@ -62,12 +62,70 @@ jobs:
             printf '%s' "$resp"
           }
 
-          # ---- La regla, escrita una sola vez ----
-          # Se usa igual para crear la política y para simularla, así lo que se
-          # prueba es exactamente lo que se aplica.
-          REGLA="key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
-                 or key like '%:libre'
-                 or split_part(key, ':', 2) = any (public.mis_comunidades())"
+          # ---- La regla, escrita UNA sola vez ----
+          # Vive en una función, así la política y la simulación usan
+          # exactamente lo mismo: lo que se prueba es lo que se aplica.
+          REGLA="public.puedo_ver(key, value)"
+
+          # Crear las funciones no cambia nada por sí solo: hasta que una
+          # política las use, son código que nadie llama. Por eso se crean
+          # también en modo "mirar", para poder probar la regla antes de ponerla.
+          crearFunciones() {
+            # A qué comunidades pertenece quien pregunta. SECURITY DEFINER a
+            # propósito: lee gb_comm_v2 sin pasar por los permisos. La regla
+            # necesita esa lista, y la lista vive en la tabla que la regla
+            # protege; sin esto se muerde la cola.
+            q "create or replace function public.mis_comunidades()
+               returns text[] language sql security definer stable
+               set search_path = public, pg_temp
+               as \$fn\$
+                 select coalesce(array_agg(c->>'id'), '{}'::text[])
+                 from public.collections k, jsonb_array_elements(k.value) c
+                 where k.key = 'gb_comm_v2'
+                   and ( c->'members' ? (select auth.uid()::text)
+                      or c->>'admin' = (select auth.uid()::text)
+                      or coalesce(c->'admins','[]'::jsonb) ? (select auth.uid()::text) );
+               \$fn\$;" > /dev/null
+
+            # ¿Esta ronda casual es mía? Una casual no es de ninguna comunidad,
+            # así que no hay a quién preguntarle: se mira la ronda misma. Cuenta
+            # como propia si la creé, si estoy inscrito, si aparezco en los
+            # resultados, si estoy en algún grupo, o si soy el anotador.
+            q "create or replace function public.mio_casual(v jsonb)
+               returns boolean language sql stable
+               set search_path = public, pg_temp
+               as \$fn\$
+                 select exists (
+                   select 1 from jsonb_array_elements(coalesce(v, '[]'::jsonb)) x
+                   where x->>'createdBy' = (select auth.uid()::text)
+                      or coalesce(x->'registered','[]'::jsonb) ? (select auth.uid()::text)
+                      or exists (select 1 from jsonb_array_elements(coalesce(x->'results'->'rows','[]'::jsonb)) r
+                                  where r->>'id' = (select auth.uid()::text))
+                      or exists (select 1 from jsonb_array_elements(coalesce(x->'teams','[]'::jsonb)) t,
+                                      jsonb_array_elements(coalesce(t->'players','[]'::jsonb)) p
+                                  where p->>'id' = (select auth.uid()::text))
+                      or exists (select 1 from jsonb_array_elements(coalesce(x->'groups','[]'::jsonb)) g
+                                  where g->>'scorerId' = (select auth.uid()::text)));
+               \$fn\$;" > /dev/null
+
+            # La regla completa.
+            q "create or replace function public.puedo_ver(k text, v jsonb)
+               returns boolean language sql stable
+               set search_path = public, pg_temp
+               as \$fn\$
+                 select k in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
+                     or split_part(k, ':', 2) = any (public.mis_comunidades())
+                     or (split_part(k, ':', 2) = 'libre' and public.mio_casual(v));
+               \$fn\$;" > /dev/null
+
+            q "revoke all on function public.mis_comunidades() from public;
+               revoke all on function public.mio_casual(jsonb) from public;
+               revoke all on function public.puedo_ver(text, jsonb) from public;
+               grant execute on function public.mis_comunidades() to authenticated;
+               grant execute on function public.mio_casual(jsonb) to authenticated;
+               grant execute on function public.puedo_ver(text, jsonb) to authenticated;" > /dev/null
+          }
+          crearFunciones
 
           echo "== 1. LAS REGLAS DE HOY =="
           q "select policyname as nombre, cmd as para, qual as condicion_de_lectura,
@@ -77,43 +135,58 @@ jobs:
 
           echo ""
           echo "== 2. A QUIÉN VAMOS A PROBARLE LA REGLA =="
-          # Uno que sí está en la comunidad con datos y uno que no está en ninguna.
+          # Cuatro personas distintas: una de la comunidad con datos, una que no
+          # está en ninguna, una que jugó una ronda casual y una que no la jugó.
           gente=$(q "with comunidades as (
                        select c->>'id' as cid, c->'members' as miembros, c->>'admin' as dueno
                        from public.collections k, jsonb_array_elements(k.value) c where k.key='gb_comm_v2'),
                      conDatos as (
                        select split_part(k.key, ':', 2) as cid, count(*) as filas
                        from public.collections k where k.key like 'gb_rounds_v2:%'
-                        and split_part(k.key, ':', 2) <> 'libre' group by 1 order by 2 desc limit 1)
+                        and split_part(k.key, ':', 2) <> 'libre' group by 1 order by 2 desc limit 1),
+                     casual as (
+                       select k.key as fila, k.value as v from public.collections k
+                       where k.key like 'gb_events_v1:libre:%' order by k.key limit 1),
+                     suyos as (
+                       select distinct j as uid from casual, jsonb_array_elements(casual.v) e,
+                            jsonb_array_elements_text(coalesce(e->'registered','[]'::jsonb)) j)
                      select (select cid from conDatos) as comunidad_con_datos,
                             (select u.id::text from auth.users u, comunidades c
                               where c.cid = (select cid from conDatos)
                                 and (c.miembros ? u.id::text or c.dueno = u.id::text) limit 1) as adentro,
                             (select u.id::text from auth.users u
                               where not exists (select 1 from comunidades c
-                                                 where c.miembros ? u.id::text or c.dueno = u.id::text) limit 1) as afuera;")
+                                                 where c.miembros ? u.id::text or c.dueno = u.id::text) limit 1) as afuera,
+                            (select fila from casual) as ronda_casual,
+                            (select u.id::text from auth.users u where u.id::text in (select uid from suyos) limit 1) as jugo_la_casual,
+                            (select u.id::text from auth.users u where u.id::text not in (select uid from suyos) limit 1) as no_jugo_la_casual;")
           echo "$gente" | jq .
           cid=$(echo "$gente" | jq -r '.[0].comunidad_con_datos')
           adentro=$(echo "$gente" | jq -r '.[0].adentro')
           afuera=$(echo "$gente" | jq -r '.[0].afuera')
+          filaCasual=$(echo "$gente" | jq -r '.[0].ronda_casual')
+          jugo=$(echo "$gente" | jq -r '.[0].jugo_la_casual')
+          noJugo=$(echo "$gente" | jq -r '.[0].no_jugo_la_casual')
           [ "$adentro" != "null" ] || { echo "ERROR: no encontré a nadie dentro de la comunidad con datos."; exit 1; }
           if [ "$afuera" = "null" ]; then
             echo "AVISO: todas las cuentas están en alguna comunidad; no hay a quién probarle 'desde afuera'."
           fi
+          if [ "$filaCasual" = "null" ]; then
+            echo "AVISO: todavía no hay ninguna ronda casual repartida en su propia fila."
+            echo "       La parte de las casuales se comprueba cuando exista al menos una."
+          fi
 
-          # Simula la regla contra los datos de verdad, sin tocar permisos:
-          # evalúa la MISMA condición, fila por fila, para un id de persona.
+          # Simula la regla SIN tocar los permisos: se corre como administrador
+          # (así se ven todas las filas, incluso las que la regla de hoy ya
+          # oculta) pero poniendo el carnet de la persona, que es lo que la
+          # función mira. O sea: evalúa la regla nueva, fila por fila, de verdad.
           simular() {
-            q "with comunidades as (
-                 select c->>'id' as cid from public.collections k, jsonb_array_elements(k.value) c
-                 where k.key='gb_comm_v2'
-                   and (c->'members' ? '$1' or c->>'admin' = '$1'
-                        or coalesce(c->'admins','[]'::jsonb) ? '$1'))
-               select k.key as fila,
-                      (k.key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
-                       or k.key like '%:libre'
-                       or split_part(k.key, ':', 2) in (select cid from comunidades)) as podria_leer
-               from public.collections k order by k.key;"
+            q "begin;
+               set local request.jwt.claims = '{\"sub\":\"$1\",\"role\":\"authenticated\"}';
+               create temp table sim as
+                 select key as fila, public.puedo_ver(key, value) as podria_leer from public.collections;
+               commit;
+               select fila, podria_leer from sim order by fila;"
           }
           ver() { echo "$1" | jq -r '.[] | "  \(if .podria_leer then "✅ lee " else "🔒 NO  " end)\(.fila)"'; }
 
@@ -124,6 +197,12 @@ jobs:
           if [ "$afuera" != "null" ]; then
             echo "-- Alguien que no está en ninguna comunidad ($afuera):"
             fuera=$(simular "$afuera"); ver "$fuera"
+          fi
+          if [ "$filaCasual" != "null" ] && [ "$jugo" != "null" ] && [ "$noJugo" != "null" ]; then
+            echo "-- Alguien que JUGÓ la ronda casual $filaCasual ($jugo):"
+            siJugo=$(simular "$jugo"); echo "$siJugo" | jq -r --arg k "$filaCasual" '.[] | select(.fila==$k) | "  \(if .podria_leer then "✅ lee " else "🔒 NO  " end)\(.fila)"'
+            echo "-- Y alguien que NO la jugó ($noJugo):"
+            noLaJugo=$(simular "$noJugo"); echo "$noLaJugo" | jq -r --arg k "$filaCasual" '.[] | select(.fila==$k) | "  \(if .podria_leer then "✅ lee " else "🔒 NO  " end)\(.fila)"'
           fi
 
           # Lo que tiene que cumplirse, sí o sí.
@@ -153,6 +232,12 @@ jobs:
             debe "ni sus tarjetas previas" \
               "$(echo "$fuera" | jq -r --arg k "gb_histcards_v1:$cid" '[.[]|select(.fila==$k)][0].podria_leer')" "false"
           fi
+          if [ "$filaCasual" != "null" ] && [ "$jugo" != "null" ] && [ "$noJugo" != "null" ]; then
+            debe "quien jugó la ronda casual la ve" \
+              "$(echo "$siJugo" | jq -r --arg k "$filaCasual" '[.[]|select(.fila==$k)][0].podria_leer')" "true"
+            debe "y quien no la jugó, NO la ve" \
+              "$(echo "$noLaJugo" | jq -r --arg k "$filaCasual" '[.[]|select(.fila==$k)][0].podria_leer')" "false"
+          fi
           [ "$falla" = "0" ] || { echo ""; echo "⛔ ME DETENGO: la regla no hace lo que debe. No se tocó nada."; exit 1; }
 
           if [ "$MODO" = "mirar" ]; then
@@ -166,6 +251,7 @@ jobs:
           abrir() {
             q "drop policy if exists \"leer solo lo de mis comunidades\" on public.collections;
                drop policy if exists \"escribir solo lo de mis comunidades\" on public.collections;
+               drop policy if exists \"corregir solo lo de mis comunidades\" on public.collections;
                drop policy if exists \"authenticated can read\" on public.collections;
                drop policy if exists \"authenticated can insert\" on public.collections;
                drop policy if exists \"authenticated can update\" on public.collections;
@@ -242,6 +328,12 @@ jobs:
               debe "de verdad NO lee las fechas de una comunidad ajena" "$(tiene "$realFuera" "gb_rounds_v2:$cid")" "false"
               debe "ni sus eventos" "$(tiene "$realFuera" "gb_events_v1:$cid")" "false"
             fi
+            if [ "$filaCasual" != "null" ] && [ "$jugo" != "null" ] && [ "$noJugo" != "null" ]; then
+              echo ""
+              echo "-- Las rondas casuales: solo quien jugó"
+              debe "quien jugó la casual la lee" "$(tiene "$(comoSi "$jugo")" "$filaCasual")" "true"
+              debe "y quien no la jugó, NO la lee" "$(tiene "$(comoSi "$noJugo")" "$filaCasual")" "false"
+            fi
             echo ""
             echo "-- Y lo que no se puede equivocar: GUARDAR"
             debe "un anotador de la comunidad puede guardar su fecha" "$(puedeGuardar "$adentro" "gb_rounds_v2:$cid")" "true"
@@ -251,6 +343,10 @@ jobs:
             if [ "$afuera" != "null" ]; then
               debe "quien no es de la comunidad NO puede tocarle sus fechas" "$(puedeGuardar "$afuera" "gb_rounds_v2:$cid")" "false"
               debe "ni sus eventos" "$(puedeGuardar "$afuera" "gb_events_v1:$cid")" "false"
+            fi
+            if [ "$filaCasual" != "null" ] && [ "$jugo" != "null" ] && [ "$noJugo" != "null" ]; then
+              debe "quien jugó la casual puede anotarla" "$(puedeGuardar "$jugo" "$filaCasual")" "true"
+              debe "y quien no la jugó NO puede tocarla" "$(puedeGuardar "$noJugo" "$filaCasual")" "false"
             fi
             [ "$falla" = "0" ] || malo=1
             return $malo
@@ -265,27 +361,8 @@ jobs:
 
           echo ""
           echo "== 5. PONIENDO LA REGLA =="
-          # La función lee gb_comm_v2 SIN pasar por los permisos, a propósito: la
-          # regla necesita saber a qué comunidades pertenece uno, y esa lista está
-          # en la misma tabla que la regla protege. Sin esto se muerde la cola.
-          q "create or replace function public.mis_comunidades()
-             returns text[]
-             language sql
-             security definer
-             stable
-             set search_path = public, pg_temp
-             as \$fn\$
-               select coalesce(array_agg(c->>'id'), '{}'::text[])
-               from public.collections k, jsonb_array_elements(k.value) c
-               where k.key = 'gb_comm_v2'
-                 and ( c->'members' ? (select auth.uid()::text)
-                    or c->>'admin' = (select auth.uid()::text)
-                    or coalesce(c->'admins','[]'::jsonb) ? (select auth.uid()::text) );
-             \$fn\$;" > /dev/null
-          q "revoke all on function public.mis_comunidades() from public;
-             grant execute on function public.mis_comunidades() to authenticated;" > /dev/null
-          echo "  función mis_comunidades(): lista"
-
+          # Las funciones ya están creadas arriba (crearFunciones), que es lo que
+          # permitió probar la regla antes de ponerla.
           q "drop policy if exists \"authenticated can read\" on public.collections;
              drop policy if exists \"authenticated can insert\" on public.collections;
              drop policy if exists \"authenticated can update\" on public.collections;

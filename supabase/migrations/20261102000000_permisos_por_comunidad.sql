@@ -16,8 +16,11 @@
 --   - gb_comm_v2     — las comunidades, para poder buscarlas y postular.
 --   - gb_courses_v2  — el catálogo de canchas.
 --   - gb_epoch       — el número de versión de los datos.
---   - "...:libre"    — las rondas casuales, que no son de ninguna comunidad.
---                      Acá falta trabajo: hoy las ve cualquiera que entre.
+--
+-- Las rondas casuales ("...:libre:ev123") no son de ninguna comunidad, así que
+-- no hay a quién preguntarle: cada una vive en su propia fila y la regla mira
+-- la ronda misma. Si la creaste, estás inscrito, apareces en los resultados, en
+-- algún grupo, o eres el anotador, la ves. Si no, no.
 --
 -- Las filas únicas de antes (gb_rounds_v2, gb_events_v1, gb_histcards_v1)
 -- quedan SIN llave de lectura a propósito: nadie las lee ni las escribe, y
@@ -46,8 +49,47 @@ as $fn$
        or coalesce(c->'admins','[]'::jsonb) ? (select auth.uid()::text) );
 $fn$;
 
+-- ¿Esta ronda casual es mía? Una casual no es de ninguna comunidad, así que no
+-- hay a quién preguntarle: se mira la ronda misma. Cuenta como propia si la
+-- creé, si estoy inscrito, si aparezco en los resultados, si estoy en algún
+-- grupo, o si soy el anotador.
+create or replace function public.mio_casual(v jsonb)
+returns boolean
+language sql
+stable
+set search_path = public, pg_temp
+as $fn$
+  select exists (
+    select 1 from jsonb_array_elements(coalesce(v, '[]'::jsonb)) x
+    where x->>'createdBy' = (select auth.uid()::text)
+       or coalesce(x->'registered','[]'::jsonb) ? (select auth.uid()::text)
+       or exists (select 1 from jsonb_array_elements(coalesce(x->'results'->'rows','[]'::jsonb)) r
+                   where r->>'id' = (select auth.uid()::text))
+       or exists (select 1 from jsonb_array_elements(coalesce(x->'teams','[]'::jsonb)) t,
+                       jsonb_array_elements(coalesce(t->'players','[]'::jsonb)) p
+                   where p->>'id' = (select auth.uid()::text))
+       or exists (select 1 from jsonb_array_elements(coalesce(x->'groups','[]'::jsonb)) g
+                   where g->>'scorerId' = (select auth.uid()::text)));
+$fn$;
+
+-- La regla completa, en un solo sitio: la usan las tres políticas de abajo.
+create or replace function public.puedo_ver(k text, v jsonb)
+returns boolean
+language sql
+stable
+set search_path = public, pg_temp
+as $fn$
+  select k in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
+      or split_part(k, ':', 2) = any (public.mis_comunidades())
+      or (split_part(k, ':', 2) = 'libre' and public.mio_casual(v));
+$fn$;
+
 revoke all on function public.mis_comunidades() from public;
+revoke all on function public.mio_casual(jsonb) from public;
+revoke all on function public.puedo_ver(text, jsonb) from public;
 grant execute on function public.mis_comunidades() to authenticated;
+grant execute on function public.mio_casual(jsonb) to authenticated;
+grant execute on function public.puedo_ver(text, jsonb) to authenticated;
 
 drop policy if exists "authenticated can read" on public.collections;
 drop policy if exists "authenticated can insert" on public.collections;
@@ -60,18 +102,14 @@ create policy "leer solo lo de mis comunidades"
   on public.collections for select
   to authenticated
   using (
-    key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
-    or key like '%:libre'
-    or split_part(key, ':', 2) = any (public.mis_comunidades())
+    public.puedo_ver(key, value)
   );
 
 create policy "escribir solo lo de mis comunidades"
   on public.collections for insert
   to authenticated
   with check (
-    key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
-    or key like '%:libre'
-    or split_part(key, ':', 2) = any (public.mis_comunidades())
+    public.puedo_ver(key, value)
   );
 
 -- Guardar es un "upsert": si la fila ya existe, es un UPDATE. Sin esta
@@ -80,14 +118,10 @@ create policy "corregir solo lo de mis comunidades"
   on public.collections for update
   to authenticated
   using (
-    key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
-    or key like '%:libre'
-    or split_part(key, ':', 2) = any (public.mis_comunidades())
+    public.puedo_ver(key, value)
   )
   with check (
-    key in ('gb_players_v2','gb_comm_v2','gb_courses_v2','gb_epoch')
-    or key like '%:libre'
-    or split_part(key, ':', 2) = any (public.mis_comunidades())
+    public.puedo_ver(key, value)
   );
 
 -- Nadie puede BORRAR filas desde la app: no hay política de delete, igual que
