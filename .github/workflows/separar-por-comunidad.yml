@@ -225,12 +225,21 @@ jobs:
               [ "$existe" = "0" ] && { echo "  $raiz:libre — ya no existe"; continue; }
               # Antes de borrar: cada cosa que lleva dentro tiene que estar ya en
               # su propia fila. Si falta una sola, no se borra nada.
+              # OJO: acá NO se puede usar jsonb_array_elements sobre la tabla sin
+              # filtrar primero. La base no garantiza que aplique el filtro de
+              # clave antes de abrir el valor, y hay filas cuyo valor no es una
+              # lista (gb_epoch es un número): reventaba con "cannot extract
+              # elements from a scalar". Se pregunta con jsonb_path_exists, que
+              # mira dentro de UNA fila sin abrirla en filas.
               sueltas=$(q "select e->>'id' as id
                            from public.collections c, jsonb_array_elements(c.value) e
                            where c.key = '$raiz:libre'
                              and not exists (
-                               select 1 from public.collections c2, jsonb_array_elements(c2.value) e2
-                               where c2.key = '$raiz:libre:' || (e->>'id') and e2->>'id' = e->>'id');")
+                               select 1 from public.collections c2
+                               where c2.key = '$raiz:libre:' || (e->>'id')
+                                 and jsonb_typeof(c2.value) = 'array'
+                                 and jsonb_path_exists(c2.value, '\$[*] ? (@.id == \$buscado)',
+                                                       jsonb_build_object('buscado', e->>'id')));")
               if [ "$(echo "$sueltas" | jq 'length')" != "0" ]; then
                 echo "  ⛔ $raiz:libre NO se borra: estas no tienen su propia fila todavía:"
                 echo "$sueltas" | jq -r '.[] | "     · \(.id)"'
