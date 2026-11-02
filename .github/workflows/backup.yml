@@ -44,7 +44,21 @@ jobs:
             exit 1
           fi
           ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
-          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
+          # Con reintentos: el 11 de octubre la copia se perdió por un solo
+          # "connection timeout" al despertar la base. Un tropiezo de un
+          # segundo no puede costar el respaldo de la semana.
+          q() {
+            local intento resp
+            for intento in 1 2 3; do
+              resp=$(api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')")
+              if echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1; then
+                printf '%s' "$resp"; return 0
+              fi
+              echo "   (intento $intento falló: $(echo "$resp" | head -c 150))" >&2
+              sleep $((intento * 5))
+            done
+            printf '%s' "$resp"; return 0
+          }
 
           mkdir -p copia
           fecha=$(date -u +%Y-%m-%d)

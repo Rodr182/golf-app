@@ -105,10 +105,17 @@ jobs:
                  where key='gb_comm_v2';")
           revisar "$r"; echo "   hecho"
 
-          echo "== 2. Quitando su ficha de jugador =="
-          r=$(q "update public.collections set value = coalesce(
-                   (select jsonb_agg(p) from jsonb_array_elements(value) p
-                     where p->>'id' <> \$uid\$${id}\$uid\$), '[]'::jsonb)
+          echo "== 2. Marcando su ficha como borrada =="
+          # Se MARCA, no se quita: así el borrado viaja solo a los demás
+          # celulares por la fusión normal. Antes había que quitarla y subir la
+          # época para que nadie la resucitara desde su copia en memoria.
+          r=$(q "update public.collections set value = (
+                   select jsonb_agg(
+                     case when p->>'id' = \$uid\$${id}\$uid\$
+                       then p || jsonb_build_object('_deleted', true,
+                                                    '_rev', (coalesce((p->>'_rev')::int, 0) + 1))
+                       else p end)
+                   from jsonb_array_elements(value) p)
                  where key='gb_players_v2';")
           revisar "$r"; echo "   hecho"
 
@@ -116,15 +123,14 @@ jobs:
           r=$(q "delete from auth.users where id = \$uid\$${id}\$uid\$::uuid;")
           revisar "$r"; echo "   hecho"
 
-          echo "== 4. Subiendo la época (los celulares abiertos se recargan) =="
-          r=$(q "insert into public.collections (key, value, updated_at)
-                 values ('gb_epoch', to_jsonb(extract(epoch from now())::bigint), now())
-                 on conflict (key) do update set value = excluded.value, updated_at = now();")
-          revisar "$r"; echo "   hecho"
+          # Ya no hace falta subir la época: la marca de borrado viaja sola con
+          # la sincronización normal, sin recargarle la pantalla a nadie.
 
           echo ""
           echo "== Cómo quedó =="
           q "select count(*) as cuentas_con_ese_email from auth.users where lower(email) = lower(\$mail\$${EMAIL}\$mail\$);" | jq .
           q "select c->>'name' as comunidad, jsonb_array_length(c->'members') as miembros
              from public.collections c0, jsonb_array_elements(c0.value) c where c0.key='gb_comm_v2';" | jq .
-          q "select count(*) as jugadores from public.collections c0, jsonb_array_elements(c0.value) p where c0.key='gb_players_v2';" | jq .
+          q "select count(*) filter (where not coalesce((p->>'_deleted')::boolean, false)) as jugadores_activos,
+                    count(*) filter (where coalesce((p->>'_deleted')::boolean, false)) as marcados_borrados
+             from public.collections c0, jsonb_array_elements(c0.value) p where c0.key='gb_players_v2';" | jq .

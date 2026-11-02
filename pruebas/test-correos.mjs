@@ -60,7 +60,9 @@ console.log("\n=== 4. EL CÓDIGO NO GUARDA EL CORREO EN LA LISTA COMPARTIDA ==="
   check("y no comparte el objeto con el correo", !/setPlayers\(\(prev\) => \(prev\.some\(\(p\) => p\.id === updated\.id\)\s*\?\s*prev\.map\(\(p\) => \(p\.id === updated\.id \? updated :/.test(perfil));
   const plan = src.slice(src.indexOf("const setPlan"), src.indexOf("const setPlan") + 420);
   check("setPlan también lo borra", /delete paraCompartir\.email/.test(plan));
-  const ensure = src.slice(src.indexOf("function ensureCloudPlayer"), src.indexOf("function ensureCloudPlayer") + 900);
+  // Hasta el final de la función, no un trozo de largo fijo: si la función
+  // crece, un corte por longitud se queda mirando el pedazo equivocado.
+  const ensure = src.slice(src.indexOf("function ensureCloudPlayer"), src.indexOf("/* ---------------- ESTILOS"));
   check("la ficha nueva nace sin correo", !/email: user\.email/.test(ensure) && /cuenta: true/.test(ensure));
 }
 

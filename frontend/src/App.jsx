@@ -1275,6 +1275,13 @@ const store = CLOUD ? cloudStore : localStore;
 /* En modo nube: asegura que el usuario autenticado tenga su registro de jugador. */
 function ensureCloudPlayer(user, players, setPlayers) {
   const found = players.find((p) => p.id === user.id);
+  // Si la ficha está marcada como borrada pero la persona logró entrar, su
+  // cuenta sigue viva: se la revive en vez de dejarla como fantasma.
+  if (found && found._deleted) {
+    const revivido = { ...found, _deleted: false, _rev: (found._rev || 0) + 1 };
+    setPlayers((prev) => prev.map((p) => (p.id === user.id ? revivido : p)));
+    return revivido;
+  }
   if (found) return found;
   const meta = user.user_metadata || {};
   const rec = {
@@ -5185,7 +5192,7 @@ export default function App() {
   useFonts();
   const isMobile = useMedia("(max-width: 680px)");
   const [ready, setReady] = useState(false);
-  const [players, setPlayers] = useState([]);
+  const [playersAll, setPlayers] = useState([]);
   const [communities, setCommunities] = useState([]);
   // El estado guarda TODO (incluido lo marcado como borrado, que hay que
   // seguir subiendo para que la marca llegue a los demás); la app trabaja con
@@ -5198,6 +5205,10 @@ export default function App() {
   const [openCommunity, setOpenCommunity] = useState(null);
   const [roundCommunity, setRoundCommunity] = useState(null);
   const [eventsAll, setEvents] = useState([]);
+  // Un jugador borrado sigue en el estado con su marca, para que el borrado
+  // llegue a los demás celulares en vez de que el primero que guarde lo
+  // resucite desde su copia en memoria.
+  const players = useMemo(() => vivos(playersAll), [playersAll]);
   const courses = useMemo(() => vivos(coursesAll), [coursesAll]);
   const rounds = useMemo(() => vivos(roundsAll), [roundsAll]);
   const events = useMemo(() => vivos(eventsAll), [eventsAll]);
@@ -5252,7 +5263,8 @@ export default function App() {
         const u = data?.session?.user;
         if (u) {
           const base = await loadData();
-          const ficha = base.find((p) => p.id === u.id) || ensureCloudPlayer(u, base, setPlayers);
+          // Se ignora la ficha marcada como borrada: ensureCloudPlayer la revive.
+          const ficha = base.find((p) => p.id === u.id && !p._deleted) || ensureCloudPlayer(u, base, setPlayers);
           // El correo se toma de la sesión (solo lo ve su dueño) y se pega en
           // memoria: la lista compartida ya no lo lleva.
           setMe({ ...ficha, email: u.email || ficha.email });
@@ -5261,7 +5273,7 @@ export default function App() {
       } else {
         const base = await loadData();
         const savedMeId = await localStore.get("gb_me_v1", null);
-        if (savedMeId) { const u = base.find((p) => p.id === savedMeId); if (u) setMe(u); }
+        if (savedMeId) { const u = base.find((p) => p.id === savedMeId && !p._deleted); if (u) setMe(u); }
       }
       setReady(true);
     })();
@@ -5302,7 +5314,7 @@ export default function App() {
     savedSnap.current[key] = snap;
     store.set(key, value);
   };
-  useEffect(() => { persist("gb_players_v2", players); }, [players, canWrite]);
+  useEffect(() => { persist("gb_players_v2", playersAll); }, [playersAll, canWrite]);
   useEffect(() => { persist("gb_comm_v2", communities); }, [communities, canWrite]);
   useEffect(() => { persist("gb_courses_v2", coursesAll); }, [coursesAll, canWrite]);
   useEffect(() => { persist("gb_rounds_v2", roundsAll); }, [roundsAll, canWrite]);
@@ -5366,7 +5378,7 @@ export default function App() {
       // pisar los datos de la nube con los valores de ejemplo.
       setReady(false);
       const base = await loadData();
-      const ficha = base.find((p) => p.id === u.cloudUser.id) || ensureCloudPlayer(u.cloudUser, base, setPlayers);
+      const ficha = base.find((p) => p.id === u.cloudUser.id && !p._deleted) || ensureCloudPlayer(u.cloudUser, base, setPlayers);
       setMe({ ...ficha, email: u.cloudUser.email || ficha.email });
       setReady(true);
       return;
