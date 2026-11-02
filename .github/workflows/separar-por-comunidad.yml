@@ -1,0 +1,157 @@
+# Reparte en la base lo que hoy está junto: una fila por comunidad.
+#
+# POR QUÉ: las fechas y los eventos de TODAS las comunidades viven en una sola
+# fila. Mientras sea así, para que alguien vea lo suyo hay que dejarlo leer esa
+# fila entera — o sea, también lo de las comunidades a las que no pertenece. El
+# filtro lo hace la app en el celular, no el servidor. Con una fila por
+# comunidad el servidor puede entregar solo lo que a cada uno le toca.
+#
+# QUÉ HACE: por cada comunidad crea "gb_rounds_v2:<id>", "gb_events_v1:<id>" y
+# "gb_histcards_v1:<id>" con lo que le corresponde.
+#
+# QUÉ NO HACE:
+#   - No borra las filas de antes. Siguen ahí, intactas, y la app las sigue
+#     leyendo y escribiendo. Volver a la versión anterior de la app no pierde
+#     nada. Quitarlas es un paso aparte, al final de todo.
+#   - No toca una fila por comunidad que ya exista: si la app ya la escribió
+#     (con datos más nuevos), se respeta. La app fusiona sola lo que falte.
+#   - No cambia los permisos de lectura. Eso es el paso siguiente.
+#
+# Sin escribir "ESCRIBIR" solo informa: dice qué filas crearía y no toca nada.
+name: Separar los datos por comunidad
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: "Vacío = solo mirar. Escribe ESCRIBIR para crear las filas"
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  separar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repartir
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          CONFIRMAR: ${{ inputs.confirmar }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            echo "Suele ser el token: se renueva en Supabase -> Account -> Access Tokens"
+            echo "y se reemplaza en GitHub -> Settings -> Secrets -> Actions -> SUPABASE_TOKEN."
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() {
+            local resp
+            resp=$(api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')")
+            echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1 \
+              || { echo "ERROR de la base: $(echo "$resp" | head -c 400)" >&2; exit 1; }
+            printf '%s' "$resp"
+          }
+
+          echo "== 1. CÓMO ESTÁ HOY =="
+          q "select c.key,
+                    pg_size_pretty(pg_column_size(c.value)::bigint) as peso,
+                    case when jsonb_typeof(c.value)='array' then jsonb_array_length(c.value) end as elementos
+             from public.collections c
+             where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1')
+                or c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%' or c.key like 'gb_histcards_v1:%'
+             order by c.key;" | jq -r '.[] | "  \(.key)\t\(.peso)\t\(.elementos // "-") elemento(s)"'
+
+          echo ""
+          echo "== 2. QUÉ FILAS HARÍAN FALTA =="
+          # Las fechas y los eventos se reparten por el communityId de cada
+          # elemento; las rondas casuales no son de ninguna comunidad y van a
+          # ":libre". Las tarjetas previas, por el communityId del paquete.
+          q "with sueltos as (
+               select c.key as raiz, coalesce(e->>'communityId','libre') as cid, count(*) as n
+               from public.collections c, jsonb_array_elements(c.value) e
+               where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1')
+               group by 1, 2)
+             select s.raiz || ':' || s.cid as fila, s.n as elementos,
+                    exists (select 1 from public.collections c2 where c2.key = s.raiz || ':' || s.cid) as ya_existe
+             from sueltos s order by 1;" \
+            | jq -r '.[] | "  \(.fila)\t\(.elementos) elemento(s)\t\(if .ya_existe then "ya existe, no se toca" else "se crearía" end)"'
+
+          if [ "${CONFIRMAR}" != "ESCRIBIR" ]; then
+            echo ""
+            echo "Modo solo mirar: no se escribió nada."
+            echo "Para crear las filas, volver a lanzar escribiendo ESCRIBIR."
+            exit 0
+          fi
+
+          echo ""
+          echo "== 3. CREANDO LAS FILAS QUE FALTAN =="
+          # "on conflict do nothing": si la app ya escribió la fila de una
+          # comunidad, lo que tiene es igual o más nuevo que esto. Pisarla
+          # podría borrar una fecha recién consolidada.
+          for raiz in gb_rounds_v2 gb_events_v1 gb_histcards_v1; do
+            r=$(q "insert into public.collections (key, value, updated_at)
+                   select c.key || ':' || coalesce(e->>'communityId','libre'),
+                          jsonb_agg(e order by (e->>'id') collate \"C\"),
+                          now()
+                   from public.collections c, jsonb_array_elements(c.value) e
+                   where c.key = '$raiz'
+                   group by 1
+                   on conflict (key) do nothing;")
+            echo "  $raiz: hecho"
+          done
+
+          echo ""
+          echo "== 4. COMPROBACIÓN: NADA SE QUEDÓ AFUERA =="
+          # Por cada elemento de la fila de antes, tiene que haber uno con el
+          # mismo id en la fila de su comunidad. Si falta alguno, este flujo
+          # falla: es justo lo que no se puede dejar pasar.
+          faltan=$(q "with antes as (
+                        select c.key as raiz, e->>'id' as id,
+                               c.key || ':' || coalesce(e->>'communityId','libre') as fila
+                        from public.collections c, jsonb_array_elements(c.value) e
+                        where c.key in ('gb_rounds_v2','gb_events_v1')),
+                      ahora as (
+                        select c.key as fila, e->>'id' as id
+                        from public.collections c, jsonb_array_elements(c.value) e
+                        where c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%')
+                      select a.raiz, a.id, a.fila from antes a
+                      where not exists (select 1 from ahora n where n.fila = a.fila and n.id = a.id)
+                      order by 1, 2;")
+          n=$(echo "$faltan" | jq 'length')
+          if [ "$n" != "0" ]; then
+            echo "⛔ ME DETENGO: $n elemento(s) no llegaron a la fila de su comunidad:"
+            echo "$faltan" | jq -r '.[] | "  \(.raiz) · \(.id) · debería estar en \(.fila)"'
+            echo ""
+            echo "Las filas de antes siguen intactas, así que no se perdió nada."
+            exit 1
+          fi
+          echo "  Todas las fechas y todos los eventos están en la fila de su comunidad."
+
+          # Las tarjetas previas no tienen id: se comparan por cantidad.
+          q "with antes as (
+               select count(*) as n from public.collections c, jsonb_array_elements(c.value) e
+               where c.key = 'gb_histcards_v1'),
+             ahora as (
+               select count(*) as n from public.collections c, jsonb_array_elements(c.value) e
+               where c.key like 'gb_histcards_v1:%')
+             select (select n from antes) as paquetes_antes, (select n from ahora) as paquetes_ahora;" | jq .
+
+          echo ""
+          echo "== 5. CÓMO QUEDÓ =="
+          q "select c.key, pg_size_pretty(pg_column_size(c.value)::bigint) as peso,
+                    jsonb_array_length(c.value) as elementos
+             from public.collections c
+             where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1')
+                or c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%' or c.key like 'gb_histcards_v1:%'
+             order by c.key;" | jq -r '.[] | "  \(.key)\t\(.peso)\t\(.elementos) elemento(s)"'
+          echo ""
+          echo "Las filas de antes siguen ahí a propósito: la app las lee y las"
+          echo "escribe igual que siempre, así que se puede volver atrás sin perder"
+          echo "nada. Quitarlas es el último paso, cuando los permisos ya estén puestos."
