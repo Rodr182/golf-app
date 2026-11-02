@@ -77,32 +77,50 @@ jobs:
                 or c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%' or c.key like 'gb_histcards_v1:%'
              order by c.key;" | jq -r '.[] | "  \(.key)\t\(.peso)\t\(.elementos // "-") elemento(s)\t\(.ultimo_cambio_utc)"'
 
-          # Si hay una ronda casual EN JUEGO, repartirla ahora mismo le movería
-          # la fila a quien está anotando. Mejor saberlo antes.
+          # Si alguien estuviera anotando una ronda casual AHORA, repartirla le
+          # movería la fila donde está escribiendo. Lo que importa no es que
+          # esté "sin cerrar" — hay rondas de hace meses que quedaron así — sino
+          # que sea de los últimos días.
           echo ""
           echo "== 1b. ¿HAY ALGUNA RONDA CASUAL EN JUEGO AHORA? =="
-          enJuego=$(q "select e->>'id' as id, e->>'name' as nombre, e->>'status' as estado, e->>'date' as fecha
-                       from public.collections c, jsonb_array_elements(c.value) e
-                       where (c.key = 'gb_events_v1' or c.key like 'gb_events_v1:libre%')
-                         and coalesce(e->>'communityId','libre') = 'libre'
-                         and coalesce(e->>'status','') <> 'cerrado';")
-          if [ "$(echo "$enJuego" | jq 'length')" = "0" ]; then
-            echo "  No. Ninguna ronda casual abierta."
+          abiertas=$(q "select distinct e->>'id' as id, e->>'name' as nombre, e->>'date' as fecha,
+                               e->>'status' as estado,
+                               (current_date - (e->>'date')::date) as dias
+                        from public.collections c, jsonb_array_elements(c.value) e
+                        where (c.key = 'gb_events_v1' or c.key like 'gb_events_v1:libre%')
+                          and coalesce(e->>'communityId','libre') = 'libre'
+                          and coalesce(e->>'status','') <> 'cerrado'
+                        order by dias;")
+          recientes=$(echo "$abiertas" | jq '[.[] | select(.dias <= 3)] | length')
+          viejas=$(echo "$abiertas" | jq '[.[] | select(.dias > 3)] | length')
+          if [ "$recientes" = "0" ]; then
+            echo "  No hay ninguna ronda casual de los últimos 3 días. Se puede repartir."
           else
-            echo "  Sí, hay rondas casuales sin cerrar:"
-            echo "$enJuego" | jq -r '.[] | "  ⚠️  \(.nombre) · \(.fecha) · \(.estado)"'
+            echo "  ⚠️  CUIDADO: hay $recientes ronda(s) casual(es) de los últimos 3 días sin cerrar."
+            echo "$abiertas" | jq -r '.[] | select(.dias <= 3) | "  ⚠️  \(.nombre) · \(.fecha) · \(.estado) · hace \(.dias) día(s)"'
+            echo "  Si alguien está anotando una de esas, mejor esperar a que la cierre."
+          fi
+          if [ "$viejas" != "0" ]; then
+            echo "  (Además hay $viejas ronda(s) casual(es) viejas que quedaron sin cerrar;"
+            echo "   no estorban al reparto, pero les siguen apareciendo como activas a quien las jugó:)"
+            echo "$abiertas" | jq -r '.[] | select(.dias > 3) | "     · \(.nombre) · \(.fecha) · hace \(.dias) días"'
           fi
 
           echo ""
           echo "== 2. QUÉ FILAS HARÍAN FALTA =="
+          # El nombre de la fila se arma desde la RAÍZ de la clave, no desde la
+          # clave entera: si no, una fila que ya es "...:libre" daría
+          # "...:libre:libre:ev123". Y se cuenta por id distinto, porque el
+          # mismo evento está a la vez en la fila única y en la de casuales.
           q "with sueltos as (
-               select c.key as raiz, ${DESTINO} as destino, count(*) as n
+               select split_part(c.key, ':', 1) || ':' || ${DESTINO} as fila,
+                      count(distinct e->>'id') as n
                from public.collections c, jsonb_array_elements(c.value) e
-               where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1')
-                  or c.key in ('gb_rounds_v2:libre','gb_events_v1:libre','gb_histcards_v1:libre')
-               group by 1, 2)
-             select s.raiz || ':' || s.destino as fila, s.n as elementos,
-                    exists (select 1 from public.collections c2 where c2.key = s.raiz || ':' || s.destino) as ya_existe
+               where c.key in ('gb_rounds_v2','gb_events_v1','gb_histcards_v1',
+                               'gb_rounds_v2:libre','gb_events_v1:libre','gb_histcards_v1:libre')
+               group by 1)
+             select s.fila, s.n as elementos,
+                    exists (select 1 from public.collections c2 where c2.key = s.fila) as ya_existe
              from sueltos s order by 1;" \
             | jq -r '.[] | "  \(.fila)\t\(.elementos) elemento(s)\t\(if .ya_existe then "ya existe, no se toca" else "se crearía" end)"'
 
@@ -118,17 +136,24 @@ jobs:
           # "on conflict do nothing": si la app ya escribió la fila de una
           # comunidad, lo que tiene es igual o más nuevo que esto. Pisarla
           # podría borrar una fecha recién consolidada.
-          # Se parte de la fila única de cada colección Y de la fila donde antes
-          # iban juntas todas las casuales ("...:libre"), que también se reparte.
+          # Hay DOS orígenes posibles: la fila única de siempre y la fila donde
+          # iban juntas todas las casuales. Un mismo evento está en las dos, así
+          # que NO se pueden leer juntas: saldría repetido dentro de la fila
+          # nueva. Se hacen dos pasos, el más nuevo primero, y el
+          # "on conflict do nothing" hace que el segundo solo llene lo que falte.
+          reparte() {
+            q "insert into public.collections (key, value, updated_at)
+               select '$1' || ':' || ${DESTINO},
+                      jsonb_agg(e order by (e->>'id') collate \"C\"),
+                      now()
+               from public.collections c, jsonb_array_elements(c.value) e
+               where c.key = '$2'
+               group by 1
+               on conflict (key) do nothing;" > /dev/null
+          }
           for raiz in gb_rounds_v2 gb_events_v1 gb_histcards_v1; do
-            r=$(q "insert into public.collections (key, value, updated_at)
-                   select '$raiz' || ':' || ${DESTINO},
-                          jsonb_agg(e order by (e->>'id') collate \"C\"),
-                          now()
-                   from public.collections c, jsonb_array_elements(c.value) e
-                   where c.key in ('$raiz', '$raiz:libre')
-                   group by 1
-                   on conflict (key) do nothing;")
+            reparte "$raiz" "$raiz:libre"   # primero la de casuales, que es la más nueva
+            reparte "$raiz" "$raiz"         # después la fila única, para lo que falte
             echo "  $raiz: hecho"
           done
 
@@ -157,7 +182,20 @@ jobs:
             echo "Las filas de antes siguen intactas, así que no se perdió nada."
             exit 1
           fi
-          echo "  Todas las fechas y todos los eventos están en la fila de su comunidad."
+          echo "  Todas las fechas y todos los eventos están en la fila que les toca."
+
+          # Y que no haya quedado nada repetido DENTRO de una fila: dos copias
+          # del mismo evento en la misma fila harían que la fusión se confunda.
+          repes=$(q "select c.key as fila, e->>'id' as id, count(*) as veces
+                     from public.collections c, jsonb_array_elements(c.value) e
+                     where c.key like 'gb_rounds_v2:%' or c.key like 'gb_events_v1:%'
+                     group by 1, 2 having count(*) > 1 order by 1, 2;")
+          if [ "$(echo "$repes" | jq 'length')" != "0" ]; then
+            echo "⛔ ME DETENGO: quedó algo repetido dentro de una fila:"
+            echo "$repes" | jq -r '.[] | "  \(.fila) · \(.id) · \(.veces) veces"'
+            exit 1
+          fi
+          echo "  Y no hay nada repetido dentro de ninguna fila."
 
           # Las tarjetas previas no tienen id: se comparan por cantidad.
           q "with antes as (
