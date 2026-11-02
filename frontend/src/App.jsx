@@ -549,6 +549,10 @@ const historicoDe = (community, temporada) => {
    excluyen explícitamente. */
 function rondasDeTarjetas(histCards, communities, players) {
   const out = [];
+  // Mientras las tarjetas viejas estén a la vez en la fila única y en la de
+  // cada comunidad, el mismo paquete puede llegar dos veces. Una fecha repetida
+  // contaría doble en las estadísticas, así que se descarta por su id.
+  const yaEsta = new Set();
   (histCards || []).forEach((paq) => {
     if (!paq || !Array.isArray(paq.tarjetas)) return;
     const porFecha = {};
@@ -557,8 +561,11 @@ function rondasDeTarjetas(histCards, communities, players) {
       const jugadores = ts.map((t) => ({
         id: t.p, name: resolveName(t.p, players), hcp: t.h, gross: t.g,
       }));
+      const id = `hist-${paq.communityId}-${date}`;
+      if (yaEsta.has(id)) return;
+      yaEsta.add(id);
       out.push({
-        id: `hist-${paq.communityId}-${date}`, communityId: paq.communityId, courseId: paq.courseId,
+        id, communityId: paq.communityId, courseId: paq.courseId,
         date, eventName: "Fecha anterior a la app", soloTarjeta: true,
         teams: [{ id: 1, start: 1, players: jugadores, pairs: [] }],
         results: { simple: false, eventStart: 1, tokenValue: 0, breakdown: [],
@@ -1038,10 +1045,25 @@ function hcpInicial(pid, players, rounds) {
   if (rec && typeof rec.hcp === "number") return { hcp: rec.hcp, origen: "perfil" };
   return { hcp: 0, origen: "sin dato" };
 }
+/* Todas las entradas del navegador que empiezan con un prefijo, como
+   { "gb_rounds_v2:c123": [...] }. Se usa para leer "una fila por comunidad". */
+function localesConPrefijo(prefijo, quitar = "") {
+  const out = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(prefijo)) continue;
+      const v = JSON.parse(localStorage.getItem(k));
+      if (Array.isArray(v)) out[k.slice(quitar.length)] = v;
+    }
+  } catch {}
+  return out;
+}
 // Persistencia local del navegador (localStorage).
 const localStore = {
   async get(k, def) { try { const r = localStorage.getItem(k); return r != null ? JSON.parse(r) : def; } catch { return def; } },
   async set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  async getPrefijo(raiz) { return localesConPrefijo(raiz + ":"); },
 };
 
 /* ---- FUSIÓN DE DATOS COMPARTIDOS ----
@@ -1120,16 +1142,6 @@ function mergeEvents(localList, remoteList) {
   (remoteList || []).forEach((re) => { if (re && !seen.has(re.id)) out.push(re); });
   return out;
 }
-function mergeById(localList, remoteList) {
-  const localIds = new Set((localList || []).filter((x) => x && x.id != null).map((x) => x.id));
-  const localJson = new Set((localList || []).filter((x) => x && x.id == null).map((x) => JSON.stringify(x)));
-  const out = [...(localList || [])];
-  (remoteList || []).forEach((rx) => {
-    if (!rx) return;
-    if (rx.id != null ? !localIds.has(rx.id) : !localJson.has(JSON.stringify(rx))) out.push(rx);
-  });
-  return out;
-}
 /* ---- BORRADO QUE SÍ SE PROPAGA ----
    La fusión solo une: si se quitara un elemento de la lista, un celular con la
    lista vieja lo volvería a subir y reaparecería. Por eso borrar no elimina:
@@ -1175,6 +1187,44 @@ function mergeByIdRev(localList, remoteList) {
 // Las rondas también usan la fusión con _rev para que una corrección (o un
 // borrado marcado) llegue a todos, no solo la unión por id.
 const CLOUD_MERGERS = { gb_events_v1: mergeEvents, gb_rounds_v2: mergeByIdRev, gb_players_v2: mergeByIdRev, gb_comm_v2: mergeCommunities, gb_courses_v2: mergeByIdRev };
+
+/* ---- UNA FILA POR COMUNIDAD ----
+   Hasta ahora las fechas y los eventos de TODAS las comunidades vivían en una
+   sola fila de la base. Eso obliga a que cualquiera que entre pueda leer esa
+   fila entera: el filtro por comunidad lo hacía la app en el celular, no el
+   servidor. Quien supiera mirar podía ver la plata de una comunidad ajena.
+
+   Ahora cada comunidad guarda lo suyo en su propia fila
+   ("gb_rounds_v2:c123"), así el servidor puede entregar solo las filas de las
+   comunidades a las que uno pertenece. La app sigue trabajando con UNA sola
+   lista en memoria: lo único que cambia es cómo se guarda y cómo se lee.
+
+   Las rondas casuales no son de ninguna comunidad: van juntas en ":libre". */
+const RAIZ_RONDAS = "gb_rounds_v2";
+const RAIZ_EVENTOS = "gb_events_v1";
+// Las tarjetas de las fechas previas a la app también son de una comunidad.
+// La app solo las lee (las carga el flujo de importación), así que acá basta
+// con saber leerlas repartidas; repartirlas es un paso de base de datos.
+const RAIZ_HIST = "gb_histcards_v1";
+const SEPARADAS = { [RAIZ_RONDAS]: mergeByIdRev, [RAIZ_EVENTOS]: mergeEvents };
+const claveComunidad = (raiz, cid) => `${raiz}:${cid || "libre"}`;
+// Qué fusión le toca a una clave, sea la fila única de antes o la de una comunidad.
+const mergerDe = (k) => CLOUD_MERGERS[k] || SEPARADAS[String(k).split(":")[0]] || null;
+/* Reparte una lista plana en una fila por comunidad. Cada fila se ordena por
+   id: así dos celulares con las mismas fechas generan exactamente el mismo
+   texto. Sin eso, cada uno creería que el otro cambió algo y se estarían
+   reescribiendo sin parar. El orden en pantalla no depende de esto — todas las
+   vistas ordenan por fecha. */
+function repartirPorComunidad(raiz, lista) {
+  const out = {};
+  (lista || []).forEach((x) => {
+    if (!x) return;
+    const k = claveComunidad(raiz, x.communityId);
+    (out[k] = out[k] || []).push(x);
+  });
+  Object.values(out).forEach((l) => l.sort((a, b) => String(a.id).localeCompare(String(b.id))));
+  return out;
+}
 
 /* ---- GUARDIÁN DE VERSIÓN DE DATOS ----
    Si desde el servidor se reinician los datos, una pestaña que quedó abierta
@@ -1227,6 +1277,19 @@ const cloudStore = {
       return local !== undefined ? local : def;
     }
   },
+  // Todas las filas de una colección repartida: una por comunidad.
+  async getPrefijo(raiz) {
+    try {
+      const { data, error } = await sb.from("collections").select("key,value").like("key", raiz + ":%");
+      if (error) throw error;
+      const out = {};
+      (data || []).forEach((r) => { if (Array.isArray(r.value)) { writeMirror(r.key, r.value); out[r.key] = r.value; } });
+      return out;
+    } catch {
+      // Sin conexión al cargar: la copia local de cada comunidad
+      return localesConPrefijo(MIRROR + raiz + ":", MIRROR);
+    }
+  },
   async set(k, v) {
     writeMirror(k, v);                       // primero la copia local, siempre
     clearTimeout(cloudTimers[k]);
@@ -1240,7 +1303,7 @@ async function subirColeccion(k, v, intento) {
     // Los datos se reiniciaron desde el servidor: no subir el estado viejo.
     if (await epochChanged()) { window.location.reload(); return; }
     let out = v;
-    const merger = CLOUD_MERGERS[k];
+    const merger = mergerDe(k);
     if (merger) {
       const { data, error } = await sb.from("collections").select("value").eq("key", k).maybeSingle();
       if (error) throw error;
@@ -5221,6 +5284,21 @@ export default function App() {
   // Al cambiar de pantalla, volver al tope de la página
   useEffect(() => { window.scrollTo(0, 0); }, [view, openCommunity]);
 
+  /* Lee una colección repartida por comunidad: las filas de cada comunidad más
+     la fila única del formato anterior, todo fusionado en una sola lista.
+     Devuelve también cada fila tal como vino, para no reescribir lo que no
+     cambió. Cuando el servidor deje de entregar la fila única (porque ya solo
+     existan las de cada comunidad), esto sigue funcionando igual: llega vacía. */
+  const leerSeparado = async (raiz) => {
+    const filas = await store.getPrefijo(raiz);
+    const vieja = (await store.get(raiz, [])) || [];
+    const fusionar = SEPARADAS[raiz];
+    let lista = vieja;
+    Object.keys(filas).sort().forEach((k) => { lista = fusionar(lista, filas[k] || []); });
+    return { lista, filas: { ...filas, [raiz]: vieja } };
+  };
+  const fotos = (filas) => Object.fromEntries(Object.entries(filas).map(([k, v]) => [k, JSON.stringify(v)]));
+
   // Carga (o siembra) todas las colecciones y devuelve la lista de jugadores.
   // En modo nube solo debe llamarse con sesión iniciada (las políticas RLS
   // bloquean la lectura a usuarios anónimos y devolverían los defaults).
@@ -5231,17 +5309,25 @@ export default function App() {
     const base = (await store.get("gb_players_v2", null)) || [];
     const comm = await store.get("gb_comm_v2", []);
     const crs = await store.get("gb_courses_v2", SEED_COURSES);
-    const rnd = await store.get("gb_rounds_v2", []);
-    const evs = await store.get("gb_events_v1", []);
-    // Tarjetas de las fechas previas a la app: se leen una sola vez al entrar y
-    // este dispositivo nunca las escribe, así que quedan fuera del sondeo de
-    // cada 15 s (son ~15 KB que no cambian nunca).
-    const hcards = await store.get("gb_histcards_v1", []);
+    // Fechas y eventos: la fila de cada comunidad, más la fila única del
+    // formato anterior mientras dure la transición.
+    const { lista: rnd, filas: filasRnd } = await leerSeparado(RAIZ_RONDAS);
+    const { lista: evs, filas: filasEvs } = await leerSeparado(RAIZ_EVENTOS);
+    // Las tarjetas previas: la fila de cada comunidad más la fila única. Se leen
+    // una sola vez al entrar y este dispositivo nunca las escribe, así que
+    // quedan fuera del sondeo de cada 15 s. Si un paquete llegara por los dos
+    // caminos, `rondasDeTarjetas` descarta la fecha repetida.
+    const porComunidad = await store.getPrefijo(RAIZ_HIST);
+    const hcards = [...Object.keys(porComunidad).sort().flatMap((k) => porComunidad[k] || []),
+      ...((await store.get(RAIZ_HIST, [])) || [])];
     // Foto de lo cargado: mientras no cambie, este dispositivo no lo reescribe.
+    // De las colecciones repartidas se guarda la foto de CADA fila tal como
+    // vino, no la de la lista fusionada: así la primera vez que entre alguien
+    // se escriben solas las filas por comunidad que todavía no existen.
     savedSnap.current = {
       gb_players_v2: JSON.stringify(base), gb_comm_v2: JSON.stringify(comm),
-      gb_courses_v2: JSON.stringify(crs), gb_rounds_v2: JSON.stringify(rnd),
-      gb_events_v1: JSON.stringify(evs),
+      gb_courses_v2: JSON.stringify(crs),
+      ...fotos(filasRnd), ...fotos(filasEvs),
     };
     setPlayers(base); setCommunities(comm); setCourses(crs); setRounds(rnd); setEvents(evs);
     setHistCards(Array.isArray(hcards) ? hcards : []);
@@ -5285,17 +5371,36 @@ export default function App() {
   useEffect(() => {
     if (!CLOUD || !me) return;
     const stable = (prev, next) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+    let vuelta = 0;
     const tick = async () => {
       if (document.hidden) return;
       try {
         if (await epochChanged()) { window.location.reload(); return; }
-        const { data } = await sb.from("collections").select("key,value").in("key", ["gb_events_v1", "gb_rounds_v2", "gb_players_v2", "gb_comm_v2"]);
-        if (!data) return;
-        const map = {}; data.forEach((r) => (map[r.key] = r.value));
-        if (map.gb_events_v1) setEvents((prev) => stable(prev, mergeEvents(prev, map.gb_events_v1)));
-        if (map.gb_rounds_v2) setRounds((prev) => stable(prev, mergeById(prev, map.gb_rounds_v2)));
+        /* La fila única de antes solo hace falta mientras algún celular siga
+           con la versión anterior de la app, que escribe nada más que ahí. Se
+           consulta una vez por minuto en vez de cada 15 s: si ese celular anota
+           un score, se ve con un minuto de atraso en el peor caso, y así el
+           sondeo no pesa el doble. Cuando ya nadie use la versión anterior,
+           esta consulta se quita y el sondeo baja a la mitad. */
+        const traerVieja = vuelta++ % 4 === 0;
+        const claves = ["gb_players_v2", "gb_comm_v2", ...(traerVieja ? [RAIZ_RONDAS, RAIZ_EVENTOS] : [])];
+        const [globales, rondas, eventos] = await Promise.all([
+          sb.from("collections").select("key,value").in("key", claves),
+          sb.from("collections").select("key,value").like("key", RAIZ_RONDAS + ":%"),
+          sb.from("collections").select("key,value").like("key", RAIZ_EVENTOS + ":%"),
+        ]);
+        const map = {}; (globales.data || []).forEach((r) => (map[r.key] = r.value));
         if (map.gb_players_v2) setPlayers((prev) => stable(prev, mergeByIdRev(prev, map.gb_players_v2)));
         if (map.gb_comm_v2) setCommunities((prev) => stable(prev, mergeCommunities(prev, map.gb_comm_v2)));
+        // Las fechas y los eventos llegan repartidos: se fusionan fila por fila.
+        const juntar = (filas, fila_unica, fusionar) => (prev) => {
+          let out = prev;
+          if (fila_unica) out = fusionar(out, fila_unica);
+          (filas || []).forEach((r) => { if (Array.isArray(r.value)) out = fusionar(out, r.value); });
+          return stable(prev, out);
+        };
+        setRounds(juntar(rondas.data, map[RAIZ_RONDAS], mergeByIdRev));
+        setEvents(juntar(eventos.data, map[RAIZ_EVENTOS], mergeEvents));
       } catch {}
     };
     const iv = setInterval(tick, 15000);
@@ -5317,8 +5422,16 @@ export default function App() {
   useEffect(() => { persist("gb_players_v2", playersAll); }, [playersAll, canWrite]);
   useEffect(() => { persist("gb_comm_v2", communities); }, [communities, canWrite]);
   useEffect(() => { persist("gb_courses_v2", coursesAll); }, [coursesAll, canWrite]);
-  useEffect(() => { persist("gb_rounds_v2", roundsAll); }, [roundsAll, canWrite]);
-  useEffect(() => { persist("gb_events_v1", eventsAll); }, [eventsAll, canWrite]);
+  /* Fechas y eventos: se guarda la fila de cada comunidad y, mientras dure la
+     transición, también la fila única de antes. Escribir las dos cuesta poco
+     (solo se sube lo que cambió, y lo que cambió es casi siempre UNA comunidad)
+     y permite volver a la versión anterior de la app sin perder nada. */
+  const persistSeparado = (raiz, lista) => {
+    persist(raiz, lista);
+    Object.entries(repartirPorComunidad(raiz, lista)).forEach(([k, v]) => persist(k, v));
+  };
+  useEffect(() => { persistSeparado(RAIZ_RONDAS, roundsAll); }, [roundsAll, canWrite]);
+  useEffect(() => { persistSeparado(RAIZ_EVENTOS, eventsAll); }, [eventsAll, canWrite]);
 
   // Avisos de arriba: guardado pendiente/fallido y versión nueva publicada.
   // Si hay una versión nueva y NO estás anotando, la app se actualiza sola;
