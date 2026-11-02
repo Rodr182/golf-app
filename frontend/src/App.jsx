@@ -463,8 +463,10 @@ function resolveName(id, players) {
     const mismo = (p) => (p.name + (p.last ? " " + p.last : "")).trim().toLowerCase() === base.toLowerCase();
     if (!lista.some((p) => p.id !== id && mismo(p))) return base;
     if (u.last2 && String(u.last2).trim()) return `${base} ${String(u.last2).trim()}`;
-    const pista = String(u.email || "").split("@")[0];
-    return pista ? `${base} (${pista})` : `${base} (${String(id).slice(0, 4)})`;
+    // Sin segundo apellido no queda nada humano con qué separarlos: se usa un
+    // trocito de su identificador. Feo a propósito, para que alguien complete
+    // el segundo apellido y desaparezca.
+    return `${base} (${String(id).slice(0, 4)})`;
   }
   const m = /^P(\d+)$/.exec(id);
   if (m) return "Player " + m[1];
@@ -1280,7 +1282,11 @@ function ensureCloudPlayer(user, players, setPlayers) {
     name: meta.name || (user.email || "").split("@")[0],
     last: meta.last || "",
     last2: meta.last2 || "",
-    email: user.email,
+    // El correo NO se guarda en la ficha compartida: esa lista la descarga
+    // entera cada celular, y nadie necesita el correo ajeno. La app solo
+    // necesita saber si la persona tiene cuenta (para poder ser anotador).
+    // El correo propio se toma de la sesión, que solo ve su dueño.
+    cuenta: true,
     birth: meta.birth || "",
     ...(meta.hcp == null ? {} : { hcp: meta.hcp }),
     plan: "free",
@@ -2329,7 +2335,7 @@ function StartRound({ courses, communities, players, me, onStart, onCancel, init
   // pool: miembros de la comunidad; en ronda libre, usuarios con cuenta + invitados
   const memberPool = useMemo(() => {
     if (community.id === "libre") {
-      const ids = [me.id, ...players.filter((p) => p.email && p.id !== me.id).map((p) => p.id)];
+      const ids = [me.id, ...players.filter((p) => (p.cuenta || p.email) && p.id !== me.id).map((p) => p.id)];
       return [...ids.map((id) => ({ id, name: resolveName(id, players) })), ...guests];
     }
     const ids = miembrosAlfabetico(community, players);
@@ -2338,7 +2344,7 @@ function StartRound({ courses, communities, players, me, onStart, onCancel, init
   }, [community, players, me, guests]);
 
   // Solo quien tiene cuenta puede anotar; los invitados no entran a la app.
-  const hasAccount = (pid) => players.some((p) => p.id === pid && p.email);
+  const hasAccount = (pid) => players.some((p) => p.id === pid && (p.cuenta || p.email));
   // Anotador por defecto de un equipo: el primero con cuenta; si son todos
   // invitados, anota quien creó la ronda.
   const defaultScorer = (list) => (list.find((p) => hasAccount(p.id)) || {}).id || me.id;
@@ -3313,7 +3319,7 @@ function EventManager({ event, community, courses, players, me, setEvents, onSav
   /* ---- ANOTADOR DEL GRUPO ----
      Anota UNA sola persona por grupo. Tiene que tener cuenta: un invitado no
      entra a la app, así que si quedaba designado nadie podía anotar. */
-  const tieneCuenta = (pid) => players.some((p) => p.id === pid && p.email);
+  const tieneCuenta = (pid) => players.some((p) => p.id === pid && (p.cuenta || p.email));
   const anotadoresPosibles = (g) => {
     const delGrupo = (g.playerIds || []).filter(tieneCuenta).map((id) => ({ id, name: resolveName(id, players) }));
     // El administrador siempre puede tomarlo: si el anotador designado no
@@ -5246,7 +5252,10 @@ export default function App() {
         const u = data?.session?.user;
         if (u) {
           const base = await loadData();
-          setMe(base.find((p) => p.id === u.id) || ensureCloudPlayer(u, base, setPlayers));
+          const ficha = base.find((p) => p.id === u.id) || ensureCloudPlayer(u, base, setPlayers);
+          // El correo se toma de la sesión (solo lo ve su dueño) y se pega en
+          // memoria: la lista compartida ya no lo lleva.
+          setMe({ ...ficha, email: u.email || ficha.email });
         }
         // Sin sesión no se cargan datos: se cargan recién al iniciar sesión.
       } else {
@@ -5325,7 +5334,15 @@ export default function App() {
     if (clean.hcp === undefined || Number.isNaN(clean.hcp)) delete clean.hcp;
     const updated = { ...me, ...clean, _rev: (me._rev || 0) + 1 };
     setMe(updated);
-    setPlayers((prev) => (prev.some((p) => p.id === updated.id) ? prev.map((p) => (p.id === updated.id ? updated : p)) : [...prev, updated]));
+    // A la lista COMPARTIDA va la ficha sin correo: `me` lo lleva pegado en
+    // memoria desde la sesión, y si se guardara tal cual volvería a viajar a
+    // todos los celulares, que es justo lo que se quiso evitar.
+    const paraCompartir = { ...updated, cuenta: true };
+    delete paraCompartir.email;
+    delete paraCompartir.pass;
+    setPlayers((prev) => (prev.some((p) => p.id === updated.id)
+      ? prev.map((p) => (p.id === updated.id ? paraCompartir : p))
+      : [...prev, paraCompartir]));
     if (CLOUD) { try { await sb.auth.updateUser({ data: { name: updated.name, last: updated.last, last2: updated.last2, birth: updated.birth } }); } catch {} }
   };
   const changePassword = CLOUD ? async (password) => {
@@ -5349,7 +5366,8 @@ export default function App() {
       // pisar los datos de la nube con los valores de ejemplo.
       setReady(false);
       const base = await loadData();
-      setMe(base.find((p) => p.id === u.cloudUser.id) || ensureCloudPlayer(u.cloudUser, base, setPlayers));
+      const ficha = base.find((p) => p.id === u.cloudUser.id) || ensureCloudPlayer(u.cloudUser, base, setPlayers);
+      setMe({ ...ficha, email: u.cloudUser.email || ficha.email });
       setReady(true);
       return;
     }
@@ -5369,7 +5387,13 @@ export default function App() {
   const myCommunitiesList = communities.filter((c) => c.members.includes(me.id) || c.admin === me.id);
   const myCommunities = myCommunitiesList.length ? myCommunitiesList : communities;
   const myOwnedCommunities = communities.filter((c) => c.admin === me.id);
-  const setPlan = (plan) => { const u = { ...me, plan }; setMe(u); setPlayers((prev) => prev.map((p) => (p.id === u.id ? u : p))); };
+  const setPlan = (plan) => {
+    const u = { ...me, plan };
+    setMe(u);
+    // Misma precaución que en saveProfile: el correo no vuelve a la lista compartida.
+    const paraCompartir = { ...u }; delete paraCompartir.email; delete paraCompartir.pass;
+    setPlayers((prev) => prev.map((p) => (p.id === u.id ? paraCompartir : p)));
+  };
   const toggleCommunityPro = (c) => setCommunities((prev) => prev.map((x) => (x.id === c.id ? { ...x, pro: !x.pro } : x)));
   const myPro = userIsPro(me);
 

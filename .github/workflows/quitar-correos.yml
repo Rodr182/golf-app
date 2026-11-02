@@ -1,0 +1,99 @@
+# Quita los correos de la lista COMPARTIDA de jugadores.
+#
+# Por qué: `gb_players_v2` la descarga entera cada celular, y llevaba el correo
+# de las 48 personas. La app nunca muestra el correo de otro — solo lo usaba
+# para saber si alguien tiene cuenta, que es un sí/no. Así que no tiene por qué
+# viajar.
+#
+# Qué hace: por cada ficha que tenga correo, lo reemplaza por `cuenta: true`.
+# Nadie pierde nada: el correo de verdad sigue en Supabase Auth (que es quien
+# maneja las cuentas) y cada uno ve el suyo al entrar, tomado de su sesión.
+#
+# Es reversible solo desde la copia de seguridad, así que primero muestra qué va
+# a cambiar y exige confirmación.
+name: Quitar los correos de la lista compartida
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: "Escribe LIMPIAR para confirmar (sin esto solo muestra qué haría)"
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  limpiar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Quitar los correos
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          CONFIRMAR: ${{ inputs.confirmar }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
+          revisar() { echo "$1" | jq -e 'if type=="object" and (has("message") or has("error")) then false else true end' > /dev/null \
+            || { echo "ERROR de la base: $1"; exit 1; }; }
+
+          echo "== Antes =="
+          antes=$(q "select count(*) filter (where p ? 'email') as con_correo,
+                            count(*) filter (where (p->>'cuenta') = 'true') as ya_marcados,
+                            count(*) as total
+                     from public.collections c, jsonb_array_elements(c.value) p
+                     where c.key='gb_players_v2';")
+          revisar "$antes"; echo "$antes" | jq .
+
+          if [ "$CONFIRMAR" != "LIMPIAR" ]; then
+            echo ""
+            echo "ENSAYO: no se tocó nada."
+            echo "Para hacerlo de verdad, vuelve a lanzarlo escribiendo LIMPIAR."
+            exit 0
+          fi
+
+          echo ""
+          echo "== Quitando los correos =="
+          # A quien tenía correo se le marca cuenta=true, para que la app siga
+          # sabiendo que puede ser anotador. Quien no tenía (nadie hoy) queda igual.
+          r=$(q "update public.collections set value = (
+                   select jsonb_agg(
+                     case when p ? 'email'
+                       then (p - 'email' - 'pass') || jsonb_build_object('cuenta', true)
+                       else p end)
+                   from jsonb_array_elements(value) p)
+                 where key='gb_players_v2';")
+          revisar "$r"; echo "   hecho"
+
+          # Los celulares con la app abierta tienen la lista vieja en memoria y
+          # la volverían a subir con los correos. Subir la época los recarga.
+          echo "== Subiendo la época (los celulares abiertos se recargan) =="
+          r=$(q "insert into public.collections (key, value, updated_at)
+                 values ('gb_epoch', to_jsonb(extract(epoch from now())::bigint), now())
+                 on conflict (key) do update set value = excluded.value, updated_at = now();")
+          revisar "$r"; echo "   hecho"
+
+          echo ""
+          echo "== Después =="
+          despues=$(q "select count(*) filter (where p ? 'email') as con_correo,
+                              count(*) filter (where (p->>'cuenta') = 'true') as con_cuenta,
+                              count(*) as total
+                       from public.collections c, jsonb_array_elements(c.value) p
+                       where c.key='gb_players_v2';")
+          revisar "$despues"; echo "$despues" | jq .
+          echo "$despues" | jq -e '.[0].con_correo == 0' > /dev/null \
+            && echo "✅ No queda ningún correo en la lista compartida." \
+            || { echo "⚠️ Todavía quedan correos: revisa el resultado de arriba."; exit 1; }
+
+          echo ""
+          echo "Los correos siguen en Supabase Auth, que es donde corresponde."
+          echo "Cada uno ve el suyo al entrar, tomado de su propia sesión."

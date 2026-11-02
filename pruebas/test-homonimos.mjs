@@ -24,19 +24,22 @@ console.log("=== 1. HOMÓNIMOS CON SEGUNDO APELLIDO ===");
 
 console.log("\n=== 2. SI ALGUNO NO LO CARGÓ, IGUAL SE DISTINGUEN ===");
 {
+  // Sin segundo apellido se los separa con un trozo de su identificador. Antes
+  // se usaba la parte del correo, pero el correo ya no viaja en la lista
+  // compartida: no tiene por qué llegarle a los demás celulares.
   const players = [
-    { id: "hijo", name: "Jaime", last: "Tagle", email: "jtaglej@gmail.com" },
-    { id: "papa", name: "Jaime", last: "Tagle", email: "taglejaime@icloud.com" },
+    { id: "3ac42543-160d", name: "Jaime", last: "Tagle", cuenta: true },
+    { id: "99fe7608-67c4", name: "Jaime", last: "Tagle", cuenta: true },
   ];
-  const a = resolveName("hijo", players), b = resolveName("papa", players);
-  check("se marcan con su correo", a !== b, `${a} · ${b}`);
-  check("y se nota cuál es cuál", /jtaglej/.test(a) && /taglejaime/.test(b), `${a} · ${b}`);
+  const a = resolveName("3ac42543-160d", players), b = resolveName("99fe7608-67c4", players);
+  check("se los marca para poder separarlos", a !== b, `${a} · ${b}`);
+  check("y no se filtra el correo de nadie", !a.includes("@") && !b.includes("@"), `${a} · ${b}`);
 }
 {
   // Uno lo cargó y el otro no: el que lo tiene usa el apellido, el otro el correo.
   const players = [
-    { id: "hijo", name: "Jaime", last: "Tagle", last2: "Jimenez", email: "jtaglej@gmail.com" },
-    { id: "papa", name: "Jaime", last: "Tagle", email: "taglejaime@icloud.com" },
+    { id: "hijo", name: "Jaime", last: "Tagle", last2: "Jimenez", cuenta: true },
+    { id: "papa", name: "Jaime", last: "Tagle", cuenta: true },
   ];
   const a = resolveName("hijo", players), b = resolveName("papa", players);
   check("mezclando los dos casos siguen siendo distintos", a !== b, `${a} · ${b}`);
