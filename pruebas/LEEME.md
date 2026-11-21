@@ -48,4 +48,5 @@ devuelve un código de salida distinto de cero si algo se rompió.
 | `smoke-anotar-desde-comunidad.mjs` | Que el anotador designado pueda escribir, y que un administrador que no anota **no** escriba por encima de él. |
 | `smoke-homonimos.mjs` | Que al inscribir y al armar grupos se pueda elegir al Jaime correcto. |
 | `smoke-gaps.mjs` | Las sugerencias de modalidades y canchas: quién puede proponer, quién puede cerrarlas. |
+| `smoke-anuncios.mjs` | Que mientras Pro no se cobre, los anuncios los vea todo el mundo: aunque un jugador o una comunidad activen el Pro de demostración. |
 | `smoke-separacion.mjs` | En el navegador: que lo que hoy está en una sola fila se reparta solo por comunidad, que sin la fila única la app siga completa, y que si falta la fila de una comunidad **solo** falte esa. |

@@ -4543,7 +4543,7 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
         </div>
       )}
 
-      {!userIsPro(me) && !community.pro && <AdSlot />}
+      {veAnuncios(me, community) && <AdSlot />}
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, background: C.creamDk, borderRadius: 12, padding: 4, width: "fit-content", flexWrap: "wrap" }}>
         <Tab id="jugadores" label={`Jugadores (${community.members.length})${iAmAdmin && applicants.length ? " · " + applicants.length + "📩" : ""}`} />
@@ -5034,6 +5034,14 @@ function CommunityDetail({ community, rounds, roundsStats, players, communities,
 /* ---------------- MONETIZACIÓN: anuncios y suscripción ---------------- */
 const userIsPro = (me) => me && me.plan === "pro";
 
+/* GolfBuddy Pro todavía NO se vende: el botón de suscripción es una
+   demostración y cualquiera lo activa gratis. Mientras sea así, los anuncios
+   los ve TODO el mundo — si no, bastaría con tocar "Suscribirme (demo)" para
+   dejar de ver a los auspiciadores. Cuando Pro se cobre de verdad, esto pasa a
+   true y los anuncios vuelven a ocultarse a quien pagó (o a su comunidad). */
+const PRO_A_LA_VENTA = false;
+const veAnuncios = (me, community) => !PRO_A_LA_VENTA || (!userIsPro(me) && !(community && community.pro));
+
 /* Administrador de la APP (dueño de la plataforma): mantiene el catálogo de
    canchas. En modo local (sin nube) cualquiera puede gestionarlo, para probar. */
 const APP_ADMIN_EMAILS = ["horna.rodrigo@gmail.com"];
@@ -5045,7 +5053,7 @@ function AdSlot({ label = "Espacio publicitario", height = 92 }) {
       background: "repeating-linear-gradient(45deg,#faf7ee,#faf7ee 10px,#f2ecda 10px,#f2ecda 20px)" }}>
       <div style={{ textAlign: "center" }}>
         <div style={{ fontWeight: 800, letterSpacing: 1.5, textTransform: "uppercase", fontSize: 12.5 }}>{label}</div>
-        <div style={{ fontSize: 11, marginTop: 3 }}>Anuncio · se oculta con GolfBuddy Pro</div>
+        <div style={{ fontSize: 11, marginTop: 3 }}>{PRO_A_LA_VENTA ? "Anuncio · se oculta con GolfBuddy Pro" : "Anuncio"}</div>
       </div>
     </div>
   );
@@ -5072,11 +5080,11 @@ function SubscriptionView({ me, onSetPlan, myOwnedCommunities, onToggleCommunity
         <Plan title="Gratis" price="S/.0" active={!pro}
           features={["Calcular rondas y resultados", "Money list y estadísticas básicas", "Con anuncios"]} />
         <Plan title="Pro (jugador)" price={<>S/.12<span style={{ fontSize: 14, fontWeight: 400 }}>/mes</span></>} active={pro}
-          features={["Sin anuncios", "Historial y estadísticas completas", "Score en vivo en tus eventos"]}
+          features={[...(PRO_A_LA_VENTA ? ["Sin anuncios"] : []), "Historial y estadísticas completas", "Score en vivo en tus eventos"]}
           cta={pro ? "Cancelar Pro (demo)" : "Suscribirme (demo)"} tone={pro ? "ghost" : "gold"}
           onClick={() => onSetPlan(pro ? "free" : "pro")} />
         <Plan title="Pro Comunidad" price={<>S/.49<span style={{ fontSize: 14, fontWeight: 400 }}>/mes</span></>}
-          features={["Todo Pro para hasta 30 miembros", "Sin anuncios para el grupo", "Lo paga el organizador"]}
+          features={["Todo Pro para hasta 30 miembros", ...(PRO_A_LA_VENTA ? ["Sin anuncios para el grupo"] : []), "Lo paga el organizador"]}
           cta={myOwnedCommunities.length ? "Gestionar abajo" : "Crea una comunidad"} tone="ghost" onClick={() => {}} />
       </div>
 
@@ -5097,7 +5105,9 @@ function SubscriptionView({ me, onSetPlan, myOwnedCommunities, onToggleCommunity
       <Card style={{ padding: 18, marginTop: 22, background: C.cream }}>
         <div style={{ fontWeight: 700, marginBottom: 6 }}>Nota</div>
         <div style={{ fontSize: 13.5, color: "#3a4a42", lineHeight: 1.6 }}>
-          Esto es una demostración del flujo: el botón solo simula el estado de suscripción. El cobro real (tarjeta, Yape) se haría con una pasarela como <b>Culqi</b> o <b>Mercado Pago</b> conectada a un servidor; el pago dispara la activación del plan. Los espacios "Anuncio" se reemplazarían por una red real (p. ej. Google AdSense) y se ocultan automáticamente al ser Pro.
+          Esto es una demostración del flujo: el botón solo simula el estado de suscripción. El cobro real (tarjeta, Yape) se haría con una pasarela como <b>Culqi</b> o <b>Mercado Pago</b> conectada a un servidor; el pago dispara la activación del plan. {PRO_A_LA_VENTA
+            ? "Los anuncios se ocultan automáticamente al ser Pro."
+            : "Mientras Pro no se cobre, los anuncios de los auspiciadores se muestran a todos, en cualquier plan."}
         </div>
       </Card>
     </div>
@@ -5739,7 +5749,7 @@ export default function App() {
                 </Card>
               ))}
             </div>
-            {!myPro && <AdSlot />}
+            {veAnuncios(me) && <AdSlot />}
           </div>
         )}
 
