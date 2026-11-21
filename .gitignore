@@ -4,3 +4,7 @@ dist-single/
 .env
 .DS_Store
 supabase/.temp/
+# Capturas que dejan las pruebas de navegador si se corren sin SHOTS_DIR.
+# Una vez se subieron sin querer: que no vuelva a pasar.
+/*.png
+/pruebas/*.png
