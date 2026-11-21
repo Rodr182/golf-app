@@ -379,9 +379,10 @@ Cada comunidad guarda lo suyo en su propia fila de la tabla `collections`:
 | `gb_rounds_v2:<id de comunidad>` | las fechas jugadas de esa comunidad | solo sus miembros |
 | `gb_events_v1:<id de comunidad>` | sus eventos | solo sus miembros |
 | `gb_histcards_v1:<id de comunidad>` | las tarjetas de las fechas previas a la app | solo sus miembros |
+| `gb_historico_v1:<id de comunidad>` | la plata de las fechas previas a la app, temporada por temporada | solo sus miembros |
 | `gb_rounds_v2:libre:<id>`, `gb_events_v1:libre:<id>` | **una ronda casual** (no es de ninguna comunidad) | solo quien la jugó |
 | `gb_players_v2` | la lista de jugadores (sin correos) | cualquiera con cuenta |
-| `gb_comm_v2` | las comunidades, para poder buscarlas y postular | cualquiera con cuenta |
+| `gb_comm_v2` | las comunidades, para poder buscarlas y postular (sin plata: la de antes de la app va en `gb_historico_v1`) | cualquiera con cuenta |
 | `gb_courses_v2` | el catálogo de canchas | cualquiera con cuenta |
 
 Quién puede leer qué **lo decide el servidor**, no la app: ver

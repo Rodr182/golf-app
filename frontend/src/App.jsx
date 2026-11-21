@@ -1264,6 +1264,35 @@ function repartirEnFilas(raiz, lista) {
   return out;
 }
 
+/* ---- EL HISTÓRICO, EN SU FILA PRIVADA ----
+   La plata de las fechas jugadas antes de usar la app (temporada por temporada)
+   vivía DENTRO de cada comunidad, en los datos que cualquiera con cuenta puede
+   leer —hacen falta abiertos para buscar comunidades y postular—. O sea: alguien
+   de afuera podía ver cuánto ganó o perdió cada miembro. Ahora vive en una fila
+   privada por comunidad ("gb_historico_v1:c123"), que solo leen sus miembros.
+
+   En memoria la app se lo vuelve a pegar a cada comunidad, igual que antes, así
+   nada del resto del código cambia. Y al guardar las comunidades se lo quita
+   SIEMPRE: que nunca vuelva a los datos compartidos. La app no escribe el
+   histórico; lo carga el flujo "Cargar temporada anterior a la app". */
+const RAIZ_HISTORICO = "gb_historico_v1";
+const sinHistorico = (lista) => (lista || []).map((c) => {
+  if (!c || !Object.prototype.hasOwnProperty.call(c, "historico")) return c;
+  const { historico, ...resto } = c;   // eslint-disable-line no-unused-vars
+  return resto;
+});
+// La fila privada manda; si todavía no existe, vale lo que venga dentro de la comunidad.
+const conHistorico = (lista, historicos) => (lista || []).map((c) =>
+  (c && historicos && historicos[c.id] ? { ...c, historico: historicos[c.id] } : c));
+// Cada fila es [{ communityId, historico: { "2026": {...} } }]
+const leerHistoricos = (filas) => {
+  const out = {};
+  Object.values(filas || {}).forEach((v) => (Array.isArray(v) ? v : []).forEach((x) => {
+    if (x && x.communityId && x.historico && typeof x.historico === "object") out[x.communityId] = x.historico;
+  }));
+  return out;
+};
+
 /* ---- GUARDIÁN DE VERSIÓN DE DATOS ----
    Si desde el servidor se reinician los datos, una pestaña que quedó abierta
    con el estado anterior los volvería a subir al guardar. Para evitarlo, el
@@ -5400,7 +5429,12 @@ export default function App() {
   const isMobile = useMedia("(max-width: 680px)");
   const [ready, setReady] = useState(false);
   const [playersAll, setPlayers] = useState([]);
-  const [communities, setCommunities] = useState([]);
+  // Las comunidades tal como se guardan (sin el histórico), y el histórico de
+  // cada una aparte, leído de su fila privada. La app trabaja con las dos
+  // juntas; al guardar, solo sale lo primero.
+  const [communitiesRaw, setCommunities] = useState([]);
+  const [historicos, setHistoricos] = useState({});
+  const communities = useMemo(() => conHistorico(communitiesRaw, historicos), [communitiesRaw, historicos]);
   // El estado guarda TODO (incluido lo marcado como borrado, que hay que
   // seguir subiendo para que la marca llegue a los demás); la app trabaja con
   // la versión sin lo borrado.
@@ -5471,6 +5505,9 @@ export default function App() {
     if (CLOUD) dataEpoch = await readEpoch();
     const base = (await store.get("gb_players_v2", null)) || [];
     const comm = await store.get("gb_comm_v2", []);
+    // El histórico de cada comunidad, de su fila privada: el servidor solo
+    // entrega el de las comunidades a las que uno pertenece.
+    const hist = leerHistoricos(await store.getPrefijo(RAIZ_HISTORICO));
     const crs = await store.get("gb_courses_v2", SEED_COURSES);
     // Fechas y eventos: la fila de cada comunidad, más la fila única del
     // formato anterior mientras dure la transición.
@@ -5489,11 +5526,11 @@ export default function App() {
     // vino, no la de la lista fusionada: así la primera vez que entre alguien
     // se escriben solas las filas por comunidad que todavía no existen.
     savedSnap.current = {
-      gb_players_v2: JSON.stringify(base), gb_comm_v2: JSON.stringify(comm),
+      gb_players_v2: JSON.stringify(base), gb_comm_v2: JSON.stringify(sinHistorico(comm)),
       gb_courses_v2: JSON.stringify(crs),
       ...fotos(filasRnd), ...fotos(filasEvs),
     };
-    setPlayers(base); setCommunities(comm); setCourses(crs); setRounds(rnd); setEvents(evs);
+    setPlayers(base); setCommunities(comm); setHistoricos(hist); setCourses(crs); setRounds(rnd); setEvents(evs);
     setHistCards(Array.isArray(hcards) ? hcards : []);
     return base;
   };
@@ -5606,7 +5643,9 @@ export default function App() {
     store.set(key, value);
   };
   useEffect(() => { persist("gb_players_v2", playersAll); }, [playersAll, canWrite]);
-  useEffect(() => { persist("gb_comm_v2", communities); }, [communities, canWrite]);
+  // Las comunidades se guardan SIEMPRE sin el histórico: es plata de los
+  // miembros, y esta fila la lee cualquiera con cuenta.
+  useEffect(() => { persist("gb_comm_v2", sinHistorico(communitiesRaw)); }, [communitiesRaw, canWrite]);
   useEffect(() => { persist("gb_courses_v2", coursesAll); }, [coursesAll, canWrite]);
   /* Fechas y eventos: cada comunidad a su fila. La fila única de antes ya no se
      escribe — queda congelada en la base como respaldo. Mientras la app la

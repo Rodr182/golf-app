@@ -335,6 +335,20 @@ jobs:
               debe "de verdad NO lee las fechas de una comunidad ajena" "$(tiene "$realFuera" "gb_rounds_v2:$cid")" "false"
               debe "ni sus eventos" "$(tiene "$realFuera" "gb_events_v1:$cid")" "false"
             fi
+            # La plata de antes de la app: en su fila privada, y NUNCA dentro de
+            # los datos compartidos de las comunidades (que lee cualquiera).
+            hayHist=$(q "select count(*) as n from public.collections where key = 'gb_historico_v1:$cid';" | jq -r '.[0].n')
+            if [ "$hayHist" != "0" ]; then
+              echo ""
+              echo "-- La plata de antes de la app"
+              debe "un miembro lee el histórico de su comunidad" "$(tiene "$realDentro" "gb_historico_v1:$cid")" "true"
+              if [ "$afuera" != "null" ]; then
+                debe "alguien de afuera NO lo lee" "$(tiene "$realFuera" "gb_historico_v1:$cid")" "false"
+              fi
+            fi
+            enCompartido=$(q "select count(*) as n from public.collections k, jsonb_array_elements(k.value) c
+                              where k.key = 'gb_comm_v2' and c ? 'historico';" | jq -r '.[0].n')
+            debe "ninguna comunidad lleva esa plata en los datos que lee cualquiera" "$enCompartido" "0"
             if [ "$filaCasual" != "null" ] && [ "$jugo" != "null" ] && [ "$noJugo" != "null" ]; then
               echo ""
               echo "-- Las rondas casuales: solo quien jugó"

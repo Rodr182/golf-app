@@ -41,12 +41,14 @@ devuelve un código de salida distinto de cero si algo se rompió.
 | `test-auditoria.mjs` | El cuadre de la plata (el Machetero es de suma cero), los netos y los strokes rehechos desde la tarjeta, el hándicap positivo, y los avisos: tarjeta incompleta, golpes poco creíbles, grupos fuera de 3–5, saltos de hándicap e invitados. |
 | `test-borrado-jugador.mjs` | Que borrar a un jugador llegue a los demás celulares y que el primero que guarde no lo resucite. |
 | `test-correos.mjs` | Que el correo de nadie viaje en la lista de jugadores que se comparte con todos. |
+| `test-historico.mjs` | Que la plata de antes de la app se lea de la fila privada de la comunidad y que, al guardar las comunidades, nunca vuelva a los datos que lee cualquiera. |
 | `test-homonimos.mjs` | Que dos personas con el mismo nombre y apellido se distingan (por segundo apellido, y si no hay, por el id). |
 | `test-mi-plata.mjs` | La plata del perfil por comunidad y temporada: sin mezclar años ni comunidades, con lo jugado antes de la app, el puesto en el money list, y exactamente el mismo número que el money list de la comunidad. |
 | `test-separacion.mjs` | Que repartir las fechas y los eventos en una fila por comunidad no pierda ni duplique nada, que dos celulares escriban el mismo texto, y que leer solo las filas permitidas no filtre las otras comunidades. |
 | `smoke-auditoria.mjs` | El recorrido completo en el navegador: se juega una fecha de dos grupos, se consolida, el administrador ve la auditoría con las tarjetas, y un miembro que no es administrador **no** la ve. |
 | `smoke-consolidar.mjs` | Que la app diga qué falta para poder consolidar, y que consolide cuando ya no falta nada. |
 | `smoke-anotar-desde-comunidad.mjs` | Que el anotador designado pueda escribir, y que un administrador que no anota **no** escriba por encima de él. |
+| `smoke-historico.mjs` | En el navegador: la plata de antes de la app en su fila privada se ve en el money list y en el perfil; guardar un cambio de la comunidad no la devuelve a los datos compartidos; y si todavía venía dentro de la comunidad, se sigue viendo y sale de ahí al primer guardado. |
 | `smoke-homonimos.mjs` | Que al inscribir y al armar grupos se pueda elegir al Jaime correcto. |
 | `smoke-gaps.mjs` | Las sugerencias de modalidades y canchas: quién puede proponer, quién puede cerrarlas. |
 | `smoke-anuncios.mjs` | Que mientras Pro no se cobre, los anuncios los vea todo el mundo: aunque un jugador o una comunidad activen el Pro de demostración. |

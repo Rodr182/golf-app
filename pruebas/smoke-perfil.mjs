@@ -71,11 +71,10 @@ await page.evaluate(([kfb, otra, rondasKfb, rondasOtra, libre]) => {
   localStorage.setItem(`gb_rounds_v2:${kfb}`, JSON.stringify(rondasKfb));
   localStorage.setItem(`gb_rounds_v2:${otra}`, JSON.stringify(rondasOtra));
   localStorage.setItem(`gb_rounds_v2:libre:l1`, JSON.stringify([libre]));
-  // Lo jugado en 2026 antes de usar la app, como lo guarda la comunidad
-  const cs = JSON.parse(localStorage.getItem("gb_comm_v2"));
-  const k = cs.find((c) => c.id === kfb);
-  k.historico = { "2026": { fechas: 3, jugadores: { [k.admin]: { money: 30, fechas: 3 }, ana: { money: -5, fechas: 2 } } } };
-  localStorage.setItem("gb_comm_v2", JSON.stringify(cs));
+  // Lo jugado en 2026 antes de usar la app, en la fila privada de la comunidad
+  const k = JSON.parse(localStorage.getItem("gb_comm_v2")).find((c) => c.id === kfb);
+  localStorage.setItem(`gb_historico_v1:${kfb}`, JSON.stringify([{ communityId: kfb,
+    historico: { "2026": { fechas: 3, jugadores: { [k.admin]: { money: 30, fechas: 3 }, ana: { money: -5, fechas: 2 } } } } }]));
 }, [kfb, otra,
   [fecha("k1", kfb, "2026-03-07", [[yo, "Rodrigo Horna", 40], ["ana", "Ana", -10], ["luis", "Luis", -30]]),
    fecha("k2", kfb, "2026-05-02", [[yo, "Rodrigo Horna", -15, medal(70, 6)], ["ana", "Ana", 25, medal(72, -3)], ["luis", "Luis", -10, medal(75, -3)]]),
