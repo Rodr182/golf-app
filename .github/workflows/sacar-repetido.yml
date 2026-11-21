@@ -85,8 +85,15 @@ jobs:
                                 and coalesce(e->'registered','[]'::jsonb) ? u.id::text) as eventos_abiertos
                      from auth.users u where lower(u.email) = lower(\$mail\$${EMAIL}\$mail\$);")
           echo "$quien" | jq .
-          echo "$quien" | jq -e 'type=="array" and length == 1' > /dev/null \
-            || { echo "ERROR: no encontré exactamente una cuenta con ese email."; exit 1; }
+          # Primero: ¿la base contestó, o devolvió un error? Un error de la
+          # consulta no puede pasar por "no encontré la cuenta".
+          echo "$quien" | jq -e 'type == "array"' > /dev/null 2>&1 \
+            || { echo "ERROR de la base: $(echo "$quien" | head -c 400)"; exit 1; }
+          if ! echo "$quien" | jq -e 'length == 1' > /dev/null; then
+            echo "No encontré exactamente una cuenta con ese email."
+            # Revisando, esa es una respuesta válida; borrando, es un error.
+            [ "$CONFIRMAR" = "BORRAR" ] && exit 1 || exit 0
+          fi
 
           id=$(echo "$quien" | jq -r '.[0].id')
           total=$(echo "$quien" | jq '[.[0].fechas_en_la_app, .[0].fechas_previas, .[0].eventos_abiertos] | add')
