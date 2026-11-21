@@ -5047,7 +5047,37 @@ const veAnuncios = (me, community) => !PRO_A_LA_VENTA || (!userIsPro(me) && !(co
 const APP_ADMIN_EMAILS = ["horna.rodrigo@gmail.com"];
 const isAppAdmin = (me) => !!me && (!CLOUD || APP_ADMIN_EMAILS.includes((me.email || "").toLowerCase()));
 
-function AdSlot({ label = "Espacio publicitario", height = 92 }) {
+/* ---- LOS AUSPICIADORES ----
+   Para poner un anuncio: dejar la imagen en frontend/public/anuncios/ y anotar
+   su nombre en `imagenes`. Tamaño pedido: 1200 × 300 px (proporción 4:1).
+   Si un auspiciador manda varias, se muestra una al azar cada vez.
+   Mientras no haya ninguna imagen, el espacio sigue mostrando el cartel de
+   muestra — y el enlace no se usa, porque no hay nada que tocar. */
+const AUSPICIADORES = [
+  { nombre: "Pink River", enlace: "https://www.pinkriverbrand.com", imagenes: [] },
+];
+const ANUNCIOS = AUSPICIADORES.flatMap((a) => (a.imagenes || []).map((imagen) => ({ ...a, imagen })));
+
+function AdSlot({ label = "Espacio publicitario", height = 92, anuncios = ANUNCIOS }) {
+  // Se elige una vez al aparecer, no en cada redibujo: si no, el anuncio
+  // cambiaría solo cada vez que alguien anota un golpe.
+  const [anuncio] = useState(() => (anuncios.length ? anuncios[Math.floor(Math.random() * anuncios.length)] : null));
+  // Si la imagen no carga (mal nombre, mala señal), vuelve el cartel de
+  // muestra en vez de un cuadro roto.
+  const [noCargo, setNoCargo] = useState(false);
+  if (anuncio && !noCargo) {
+    return (
+      // En el celular ocupa todo el ancho; en un computador se limita a 728 px
+      // de ancho (182 de alto), para que no quede un cartel gigante.
+      <a href={anuncio.enlace} target="_blank" rel="noopener sponsored" aria-label={`Publicidad: ${anuncio.nombre}`}
+        data-anuncio={anuncio.nombre}
+        style={{ display: "block", maxWidth: 728, margin: "14px auto", borderRadius: 14, overflow: "hidden", border: `1px solid ${C.line}`, lineHeight: 0 }}>
+        <img src={`anuncios/${anuncio.imagen}`} alt={`Publicidad de ${anuncio.nombre}`} loading="lazy"
+          onError={() => setNoCargo(true)}
+          style={{ display: "block", width: "100%", aspectRatio: "4 / 1", objectFit: "cover" }} />
+      </a>
+    );
+  }
   return (
     <div style={{ border: `1.5px dashed ${C.line}`, borderRadius: 14, minHeight: height, display: "grid", placeItems: "center", color: "#9aa69e", margin: "14px 0",
       background: "repeating-linear-gradient(45deg,#faf7ee,#faf7ee 10px,#f2ecda 10px,#f2ecda 20px)" }}>

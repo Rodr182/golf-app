@@ -49,4 +49,5 @@ devuelve un código de salida distinto de cero si algo se rompió.
 | `smoke-homonimos.mjs` | Que al inscribir y al armar grupos se pueda elegir al Jaime correcto. |
 | `smoke-gaps.mjs` | Las sugerencias de modalidades y canchas: quién puede proponer, quién puede cerrarlas. |
 | `smoke-anuncios.mjs` | Que mientras Pro no se cobre, los anuncios los vea todo el mundo: aunque un jugador o una comunidad activen el Pro de demostración. |
+| `smoke-auspiciador.mjs` | El espacio publicitario en celular y computador. Sin imagen: sigue el cartel de muestra, sin enlace. Con imagen: carga, se ve entera en 4:1, lleva al sitio del auspiciador en otra pestaña y en un computador no pasa de 728 px. |
 | `smoke-separacion.mjs` | En el navegador: que lo que hoy está en una sola fila se reparta solo por comunidad, que sin la fila única la app siga completa, y que si falta la fila de una comunidad **solo** falte esa. |
