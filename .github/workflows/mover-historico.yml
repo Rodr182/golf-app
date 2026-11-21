@@ -1,0 +1,142 @@
+# Mueve la plata de las fechas jugadas ANTES de usar la app a una fila privada
+# de cada comunidad.
+#
+# POR QUÉ: ese histórico (cuánto ganó o perdió cada uno, temporada por
+# temporada) vivía DENTRO de la comunidad, en los datos que cualquiera con
+# cuenta puede leer —hacen falta abiertos para buscar comunidades y postular—.
+# O sea: alguien de afuera de una comunidad podía ver la plata de sus miembros.
+# En su propia fila ("gb_historico_v1:<id de comunidad>") solo la leen ellos.
+#
+# EL ORDEN IMPORTA, por eso son pasos separados:
+#   1. COPIAR  — crea la fila privada de cada comunidad con su histórico. No
+#                borra nada. Comprueba que la copia sea idéntica.
+#   2. (publicar la app que lee la fila privada)
+#   3. LIMPIAR — saca el histórico de los datos compartidos. Antes vuelve a
+#                comprobar, temporada por temporada, que esté idéntico en la
+#                fila privada; si falta algo o difiere, no saca nada.
+# Hacerlo al revés borraría la plata de antes de la app.
+#
+# Sin modo (o "mirar") solo informa.
+name: Mover el histórico a cada comunidad
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "mirar (no toca nada) · COPIAR · LIMPIAR"
+        required: true
+        default: "mirar"
+        type: choice
+        options: [mirar, COPIAR, LIMPIAR]
+
+permissions: {}
+
+jobs:
+  mover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mover
+        env:
+          SB_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          MODO: ${{ inputs.modo }}
+        run: |
+          set -euo pipefail
+          [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
+          api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
+          proyectos=$(api https://api.supabase.com/v1/projects)
+          if ! echo "$proyectos" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            echo "ERROR: la API de Supabase no devolvió la lista de proyectos."
+            echo "Respuesta: $(echo "$proyectos" | head -c 300)"
+            exit 1
+          fi
+          ref=$(echo "$proyectos" | jq -r '[.[] | select(.name | test("machetero|golf"; "i"))][0].id // .[0].id')
+          q() {
+            local resp
+            resp=$(api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')")
+            echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1 \
+              || { echo "ERROR de la base: $(echo "$resp" | head -c 500)" >&2; exit 1; }
+            printf '%s' "$resp"
+          }
+
+          echo "== 1. DÓNDE ESTÁ HOY =="
+          echo "-- Dentro de la comunidad (lo leen todos):"
+          q "select c->>'name' as comunidad, c->>'id' as id,
+                    (select string_agg(t, ', ' order by t) from jsonb_object_keys(c->'historico') t) as temporadas
+             from public.collections k, jsonb_array_elements(k.value) c
+             where k.key = 'gb_comm_v2' and jsonb_typeof(c->'historico') = 'object'
+               and c->'historico' <> '{}'::jsonb;" | jq -r 'if length == 0 then "   (ninguna)" else .[] | "   \(.comunidad) (\(.id)): \(.temporadas)" end'
+          echo "-- En su fila privada (solo sus miembros):"
+          q "select h.key as fila,
+                    (select string_agg(t, ', ' order by t) from jsonb_object_keys(coalesce(h.value->0->'historico','{}'::jsonb)) t) as temporadas
+             from public.collections h where h.key like 'gb_historico_v1:%' order by 1;" \
+            | jq -r 'if length == 0 then "   (ninguna)" else .[] | "   \(.fila): \(.temporadas)" end'
+
+          # Temporada por temporada, ¿está idéntica en la fila privada?
+          # Devuelve las que FALTAN o DIFIEREN. Vacío = todo copiado.
+          diferencias() {
+            q "select c->>'name' as comunidad, t.key as temporada,
+                      case when h.value is null then 'no hay fila privada'
+                           when not (h.value->0->'historico' ? t.key) then 'falta esa temporada'
+                           else 'es distinta' end as problema
+               -- Uniones explícitas, no con comas: con comas el LEFT JOIN no
+               -- puede ver la comunidad (c) en su condición.
+               from public.collections k
+               cross join lateral jsonb_array_elements(k.value) c
+               cross join lateral jsonb_each(case when jsonb_typeof(c->'historico') = 'object' then c->'historico' else '{}'::jsonb end) t
+               left join public.collections h on h.key = 'gb_historico_v1:' || (c->>'id')
+               where k.key = 'gb_comm_v2'
+                 and (h.value is null or (h.value->0->'historico'->t.key) is distinct from t.value)
+               order by 1, 2;"
+          }
+
+          if [ "$MODO" = "COPIAR" ]; then
+            echo ""
+            echo "== 2. COPIANDO =="
+            # "on conflict do nothing": si la fila privada ya existe (porque se
+            # cargó una temporada nueva con el flujo de importar), no se pisa.
+            # Lo que falte se ve abajo, en la comprobación.
+            q "insert into public.collections (key, value, updated_at)
+               select 'gb_historico_v1:' || (c->>'id'),
+                      jsonb_build_array(jsonb_build_object('communityId', c->>'id', 'historico', c->'historico')),
+                      now()
+               from public.collections k, jsonb_array_elements(k.value) c
+               where k.key = 'gb_comm_v2' and jsonb_typeof(c->'historico') = 'object'
+                 and c->'historico' <> '{}'::jsonb
+               on conflict (key) do nothing
+               returning key;" | jq -r 'if length == 0 then "   (nada nuevo que copiar)" else .[] | "   creada \(.key)" end'
+          fi
+
+          echo ""
+          echo "== 3. COMPROBACIÓN: ¿ESTÁ TODO, IDÉNTICO, EN LA FILA PRIVADA? =="
+          dif=$(diferencias)
+          if [ "$(echo "$dif" | jq 'length')" != "0" ]; then
+            echo "$dif" | jq -r '.[] | "   ✗ \(.comunidad) · \(.temporada): \(.problema)"'
+            if [ "$MODO" = "LIMPIAR" ]; then
+              echo ""
+              echo "⛔ ME DETENGO: no saco nada de la comunidad mientras falte o difiera algo."
+              echo "   Primero hay que lanzar este flujo con COPIAR."
+              exit 1
+            fi
+          else
+            echo "   ✓ Cada temporada de cada comunidad está idéntica en su fila privada."
+          fi
+
+          if [ "$MODO" = "LIMPIAR" ]; then
+            echo ""
+            echo "== 4. SACANDO EL HISTÓRICO DE LOS DATOS COMPARTIDOS =="
+            # Solo se quita el campo "historico" de cada comunidad; todo lo
+            # demás (miembros, reglas, postulaciones) queda igual.
+            q "update public.collections k set value = (
+                 select jsonb_agg(c - 'historico') from jsonb_array_elements(k.value) c)
+               where k.key = 'gb_comm_v2'
+               returning k.key;" > /dev/null
+            quedan=$(q "select count(*) as n from public.collections k, jsonb_array_elements(k.value) c
+                        where k.key = 'gb_comm_v2' and c ? 'historico';" | jq -r '.[0].n')
+            [ "$quedan" = "0" ] || { echo "⛔ Quedaron $quedan comunidades con histórico dentro."; exit 1; }
+            echo "   ✓ Ninguna comunidad lleva ya la plata de antes de la app en los datos compartidos."
+          fi
+
+          if [ "$MODO" = "mirar" ]; then
+            echo ""
+            echo "Modo mirar: no se tocó nada."
+          fi

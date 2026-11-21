@@ -55,12 +55,23 @@ jobs:
                    p->>'email' as email
             from public.collections c0, jsonb_array_elements(c0.value) p where c0.key='gb_players_v2'
           ),
+          -- Las fechas viven en una fila por comunidad (y una por ronda casual);
+          -- la fila única de antes quedó congelada. Se leen todas, y como una
+          -- misma fecha puede estar en la congelada y en la nueva, se cuenta UNA
+          -- vez por id, quedándose con la copia nueva.
+          rondas as (
+            select distinct on (r->>'id') r
+            from public.collections c1, jsonb_array_elements(c1.value) r
+            where (c1.key = 'gb_rounds_v2' or c1.key like 'gb_rounds_v2:%')
+              and jsonb_typeof(c1.value) = 'array'
+            order by r->>'id', (c1.key = 'gb_rounds_v2')
+          ),
           fechas as (
             select row->>'id' as id,
                    count(*) as fechas_jugadas,
                    round(sum((row->>'totalMoney')::numeric)) as soles
-            from public.collections c1, jsonb_array_elements(c1.value) r, jsonb_array_elements(r->'results'->'rows') row
-            where c1.key='gb_rounds_v2' group by 1
+            from rondas, jsonb_array_elements(coalesce(rondas.r->'results'->'rows','[]'::jsonb)) row
+            group by 1
           ),
           miembros as (
             select m as id, c->>'name' as comunidad
@@ -68,12 +79,15 @@ jobs:
                  jsonb_array_elements_text(coalesce(c->'members','[]'::jsonb)) m
             where c2.key='gb_comm_v2'
           ),
+          -- El histórico de antes de la app: en su fila privada de cada
+          -- comunidad, o todavía dentro de la comunidad mientras dure el traslado.
           historico as (
             select h.key as id, (h.value->>'fechas')::int as fechas_previas
             from public.collections c3, jsonb_array_elements(c3.value) c,
                  jsonb_each(coalesce(c->'historico','{}'::jsonb)) t(temp, datos),
                  jsonb_each(coalesce(datos->'jugadores','{}'::jsonb)) h
-            where c3.key='gb_comm_v2'
+            where (c3.key = 'gb_comm_v2' or c3.key like 'gb_historico_v1:%')
+              and jsonb_typeof(c3.value) = 'array'
           )
           select j.nombre_visible, j.email, j.id,
                  coalesce(string_agg(distinct m.comunidad, ', '), '(en ninguna)') as comunidades,

@@ -6,6 +6,7 @@
 #
 # Es destructivo, así que:
 #   - Hay que escribir el email completo Y la palabra BORRAR para confirmar.
+#     Sin BORRAR solo revisa: muestra la actividad de la cuenta y no toca nada.
 #   - Antes de tocar nada comprueba que esa cuenta NO tenga fechas jugadas, ni
 #     fechas previas, ni plata, ni inscripciones abiertas. Si tiene algo, se
 #     detiene: borrarla dejaría resultados apuntando a un jugador inexistente.
@@ -27,8 +28,8 @@ on:
         description: "Email EXACTO de la cuenta que sobra (la nueva)"
         required: true
       confirmar:
-        description: "Escribe BORRAR para confirmar"
-        required: true
+        description: "Vacío = solo revisar (no borra nada). Escribe BORRAR para sacarla de verdad"
+        required: false
         default: ""
 
 permissions: {}
@@ -45,7 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$SB_TOKEN" ] || { echo "ERROR: falta el secreto SUPABASE_TOKEN"; exit 1; }
-          [ "$CONFIRMAR" = "BORRAR" ] || { echo "ERROR: hay que escribir BORRAR para confirmar"; exit 1; }
+          # Sin BORRAR, revisa todo y no toca nada: así se puede ver primero si
+          # la cuenta tiene actividad, antes de decidir.
           case "$EMAIL" in *'$mail$'*) echo "ERROR: email inválido"; exit 1;; esac
 
           api() { curl -sS -H "Authorization: Bearer $SB_TOKEN" -H "Content-Type: application/json" "$@"; }
@@ -59,15 +61,27 @@ jobs:
           q() { api -X POST "https://api.supabase.com/v1/projects/$ref/database/query" -d "$(jq -n --arg s "$1" '{query:$s}')"; }
 
           echo "== A quién vamos a sacar =="
+          # OJO con dónde se busca la actividad. Las fechas y los eventos viven en
+          # una fila por comunidad (y una por cada ronda casual), y el histórico
+          # de antes de la app en su propia fila privada. Las filas únicas de
+          # antes quedaron congeladas: si solo se mirara ahí, alguien que jugó
+          # después del reparto parecería "sin actividad" y se le podría borrar
+          # la cuenta. Se mira en TODOS los lugares, viejos y nuevos.
           quien=$(q "select u.id::text as id, u.email, u.created_at,
                             (select count(*) from public.collections c1, jsonb_array_elements(c1.value) r,
-                                    jsonb_array_elements(r->'results'->'rows') row
-                              where c1.key='gb_rounds_v2' and row->>'id' = u.id::text) as fechas_en_la_app,
+                                    jsonb_array_elements(coalesce(r->'results'->'rows','[]'::jsonb)) row
+                              where (c1.key = 'gb_rounds_v2' or c1.key like 'gb_rounds_v2:%')
+                                and jsonb_typeof(c1.value) = 'array'
+                                and row->>'id' = u.id::text) as fechas_en_la_app,
                             (select count(*) from public.collections c2, jsonb_array_elements(c2.value) c,
                                     jsonb_each(coalesce(c->'historico','{}'::jsonb)) t(tmp, datos)
-                              where c2.key='gb_comm_v2' and datos->'jugadores' ? u.id::text) as fechas_previas,
+                              where (c2.key = 'gb_comm_v2' or c2.key like 'gb_historico_v1:%')
+                                and jsonb_typeof(c2.value) = 'array'
+                                and datos->'jugadores' ? u.id::text) as fechas_previas,
                             (select count(*) from public.collections c3, jsonb_array_elements(c3.value) e
-                              where c3.key='gb_events_v1' and e->>'status' <> 'cerrado'
+                              where (c3.key = 'gb_events_v1' or c3.key like 'gb_events_v1:%')
+                                and jsonb_typeof(c3.value) = 'array'
+                                and e->>'status' <> 'cerrado'
                                 and coalesce(e->'registered','[]'::jsonb) ? u.id::text) as eventos_abiertos
                      from auth.users u where lower(u.email) = lower(\$mail\$${EMAIL}\$mail\$);")
           echo "$quien" | jq .
@@ -86,6 +100,11 @@ jobs:
           echo ""
           echo "Sin actividad. Se puede sacar. Id: $id"
           echo ""
+          if [ "$CONFIRMAR" != "BORRAR" ]; then
+            echo "Modo revisar: no se borró nada."
+            echo "Para sacarla de verdad, volver a lanzar escribiendo BORRAR."
+            exit 0
+          fi
 
           revisar() {
             echo "$1" | jq -e 'if type=="object" and (has("message") or has("error")) then false else true end' > /dev/null \
