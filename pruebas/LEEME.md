@@ -42,6 +42,7 @@ devuelve un código de salida distinto de cero si algo se rompió.
 | `test-borrado-jugador.mjs` | Que borrar a un jugador llegue a los demás celulares y que el primero que guarde no lo resucite. |
 | `test-correos.mjs` | Que el correo de nadie viaje en la lista de jugadores que se comparte con todos. |
 | `test-homonimos.mjs` | Que dos personas con el mismo nombre y apellido se distingan (por segundo apellido, y si no hay, por el id). |
+| `test-mi-plata.mjs` | La plata del perfil por comunidad y temporada: sin mezclar años ni comunidades, con lo jugado antes de la app, el puesto en el money list, y exactamente el mismo número que el money list de la comunidad. |
 | `test-separacion.mjs` | Que repartir las fechas y los eventos en una fila por comunidad no pierda ni duplique nada, que dos celulares escriban el mismo texto, y que leer solo las filas permitidas no filtre las otras comunidades. |
 | `smoke-auditoria.mjs` | El recorrido completo en el navegador: se juega una fecha de dos grupos, se consolida, el administrador ve la auditoría con las tarjetas, y un miembro que no es administrador **no** la ve. |
 | `smoke-consolidar.mjs` | Que la app diga qué falta para poder consolidar, y que consolide cuando ya no falta nada. |
@@ -50,4 +51,5 @@ devuelve un código de salida distinto de cero si algo se rompió.
 | `smoke-gaps.mjs` | Las sugerencias de modalidades y canchas: quién puede proponer, quién puede cerrarlas. |
 | `smoke-anuncios.mjs` | Que mientras Pro no se cobre, los anuncios los vea todo el mundo: aunque un jugador o una comunidad activen el Pro de demostración. |
 | `smoke-auspiciador.mjs` | El espacio publicitario en celular y computador. Sin imagen: sigue el cartel de muestra, sin enlace. Con imagen: carga, se ve entera en 4:1, lleva al sitio del auspiciador en otra pestaña y en un computador no pasa de 728 px. |
+| `smoke-perfil.mjs` | El perfil en un celular: "Mi plata" por comunidad y temporada (entra en la principal y el año actual, cambia bien, sin puesto en las rondas libres, colores según el signo), "Mi juego" con todo junto y su propio año, y el mismo número que el money list de la comunidad. |
 | `smoke-separacion.mjs` | En el navegador: que lo que hoy está en una sola fila se reparta solo por comunidad, que sin la fila única la app siga completa, y que si falta la fila de una comunidad **solo** falte esa. |

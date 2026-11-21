@@ -869,6 +869,36 @@ function playerHoleStats(meId, rounds, courseId, courses) {
   return { course, vueltas, hoyos };
 }
 
+/* Mi plata en UNA comunidad y UNA temporada: lo que muestra el perfil.
+   Sale de las mismas cuentas que el money list de la comunidad (incluido lo
+   jugado antes de usar la app), así el perfil y la comunidad dicen siempre
+   exactamente el mismo número. */
+function miPlataEn(meId, rounds, communities, cid, temporada) {
+  const community = (communities || []).find((c) => c.id === cid) || null;
+  const lista = communityMoneyList(cid, rounds, temporada, community);
+  const i = lista.findIndex((x) => x.id === meId);
+  const yo = i >= 0 ? lista[i] : null;
+  // El puesto solo tiene sentido dentro de una comunidad. Las rondas casuales
+  // son cada una de otro grupo de amigos: ordenarlas juntas no dice nada.
+  const casual = cid === "libre";
+  return {
+    total: yo ? yo.total : 0,
+    fechas: yo ? yo.rounds : 0,
+    hist: yo ? yo.hist : 0,
+    histFechas: yo ? yo.histFechas : 0,
+    mejor: yo && Number.isFinite(yo.best) ? yo.best : null,
+    peor: yo && Number.isFinite(yo.worst) ? yo.worst : null,
+    puesto: !casual && yo ? i + 1 : null,
+    de: casual ? null : lista.length,
+    // Mis fechas de esa comunidad y temporada, también las "rondas simples"
+    // (sin plata, pero con tarjeta): si no, desaparecerían del perfil.
+    rondas: (rounds || [])
+      .filter((r) => r.communityId === cid && !r.soloTarjeta && temporadaDe(r) === temporada
+                  && r.results.rows.some((x) => x.id === meId))
+      .sort(masRecientePrimero),
+  };
+}
+
 /* Historial del Medal: en qué fechas se jugó y con qué neto quedó el jugador */
 function playerMedalHistory(meId, rounds) {
   const out = [];
@@ -2884,8 +2914,27 @@ function GraficoHcp({ hist }) {
   );
 }
 
+/* Elegir una opción entre varias (comunidad, temporada): el mismo estilo que el
+   selector de temporada de la comunidad, para que se lean igual. */
+function Pildoras({ titulo, opciones, valor, onCambiar }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+      {titulo && <span style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase", letterSpacing: .4 }}>{titulo}</span>}
+      {opciones.map(([v, etiqueta]) => (
+        <button key={v} onClick={() => onCambiar(v)} aria-pressed={v === valor} style={{
+          border: `1.5px solid ${v === valor ? C.green : C.line}`, background: v === valor ? C.green : "#fff",
+          color: v === valor ? C.cream : C.ink, borderRadius: 999, padding: "5px 14px", fontWeight: 700, fontSize: 13,
+          cursor: "pointer", fontFamily: "'Spline Sans',sans-serif" }}>{etiqueta}</button>
+      ))}
+    </div>
+  );
+}
+
 function PlayerView({ me, rounds, roundsStats, communities, players, courses: coursesProp, onSaveProfile, onChangePassword }) {
-  const [openCardIdx, setOpenCardIdx] = useState(null);
+  const [openCardId, setOpenCardId] = useState(null);
+  const [anioJuego, setAnioJuego] = useState("todas");   // "Mi juego": todas las temporadas, o un año
+  const [plataCom, setPlataCom] = useState(null);        // "Mi plata": comunidad elegida (null = la principal)
+  const [plataTemp, setPlataTemp] = useState(null);      // "Mi plata": temporada elegida (null = la actual)
   const [holeCourse, setHoleCourse] = useState(null);
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ name: me.name || "", last: me.last || "", last2: me.last2 || "", birth: me.birth || "", hcp: me.hcp ?? "" });
@@ -2907,26 +2956,55 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
     setPwMsg(err || "✓ Contraseña actualizada.");
     if (!err) { setPw({ a: "", b: "" }); setTimeout(() => setCambiandoPw(false), 1500); }
   };
-  const byComm = playerMoneyByCommunity(me.id, rounds, communities);
-  const porFechaDesc = masRecientePrimero;
-  const myRounds = rounds.filter((r) => r.results.rows.some((x) => x.id === me.id)).sort(porFechaDesc);
-  const grandTotal = byComm.reduce((s, b) => s + b.total, 0);
-  // Las fechas previas a la app también cuentan como rondas jugadas
-  const histFechas = byComm.reduce((s, b) => s + b.histFechas, 0);
-  const totalFechas = byComm.reduce((s, b) => s + b.rounds, 0);
-  const cName = (id) => communities.find((c) => c.id === id)?.name || (id === "libre" ? "Ronda libre" : "Comunidad");
-  const cCur = (id) => communities.find((c) => c.id === id)?.currency || "S/.";
   const courses = coursesProp || [];
-  // Las estadísticas y las tarjetas sí miran la temporada completa, porque de
-  // las fechas previas a la app sí tenemos la tarjeta hoyo por hoyo.
-  const rStats = roundsStats || rounds;
-  const stats = playerScoreStats(me.id, rStats, courses);
-  const hcpHist = playerHcpHistory(me.id, rStats);
+  const porFechaDesc = masRecientePrimero;
+  const cName = (id) => communities.find((c) => c.id === id)?.name || (id === "libre" ? "🕊️ Rondas libres" : "Comunidad");
+  const cCur = (id) => communities.find((c) => c.id === id)?.currency || "S/.";
+  const juegoEn = (r) => (r.teams || []).some((t) => t.players.some((p) => p.id === me.id));
+  const rStats = roundsStats || rounds;   // incluye las tarjetas de las fechas previas a la app
+  const byComm = playerMoneyByCommunity(me.id, rounds, communities);
+
+  /* ===== MI PLATA: por comunidad y por temporada =====
+     La plata no se suma entre comunidades: son grupos distintos, con valores de
+     token distintos, y podrían jugar en monedas distintas. Antes había un
+     "Balance total" que hacía justo eso; no significaba nada. */
+  const fechasEn = (id) => (byComm.find((b) => b.communityId === id) || {}).rounds || 0;
+  const misRondasApp = rounds.filter((r) => !r.soloTarjeta && r.results.rows.some((x) => x.id === me.id));
+  const misComunidades = [...new Set([...byComm.map((b) => b.communityId), ...misRondasApp.map((r) => r.communityId || "libre")])]
+    // Primero la que más jugaste; las rondas libres siempre al final.
+    .sort((a, b) => (a === "libre") - (b === "libre") || fechasEn(b) - fechasEn(a) || cName(a).localeCompare(cName(b)));
+  const comElegida = misComunidades.includes(plataCom) ? plataCom : misComunidades[0] || null;
+  const temporadasCom = comElegida ? [...new Set([
+    ...((byComm.find((b) => b.communityId === comElegida) || {}).temporadas || []).map((t) => t.temporada),
+    ...misRondasApp.filter((r) => (r.communityId || "libre") === comElegida).map(temporadaDe),
+  ])].filter((t) => t && t !== "—").sort((a, b) => (a < b ? 1 : -1)) : [];
+  // Al cambiar de comunidad, si no jugaste ahí ese año, se va a su temporada más reciente.
+  const tempElegida = temporadasCom.includes(plataTemp) ? plataTemp
+    : temporadasCom.includes(temporadaActual()) ? temporadaActual() : temporadasCom[0] || null;
+  const plata = comElegida && tempElegida ? miPlataEn(me.id, rounds, communities, comElegida, tempElegida) : null;
+  const cur = comElegida ? cCur(comElegida) : "S/.";
+
+  /* ===== MI JUEGO: de todas las comunidades juntas =====
+     Tu juego es el mismo donde sea que juegues, así que acá sí se junta todo.
+     Tiene su propio selector de año, que no toca la plata. */
+  const aniosJuego = [...new Set([
+    ...rStats.filter(juegoEn).map(temporadaDe),
+    ...byComm.flatMap((b) => b.temporadas.map((t) => t.temporada)),
+  ])].filter((t) => t && t !== "—").sort((a, b) => (a < b ? 1 : -1));
+  const anio = anioJuego === "todas" || aniosJuego.includes(anioJuego) ? anioJuego : "todas";
+  const rJuego = anio === "todas" ? rStats : rStats.filter((r) => temporadaDe(r) === anio);
+  const stats = playerScoreStats(me.id, rJuego, courses);
+  const hcpHist = playerHcpHistory(me.id, rJuego);
+  // El hándicap de hoy es el de hoy: no depende del año que se esté mirando.
   const ultJugado = ultimoHcpJugado(me.id, rStats);
   const maxCat = Math.max(1, ...Object.values(stats.counts));
+  // Fechas jugadas, contando también las de antes de usar la app.
+  const enAnio = (b) => (anio === "todas" ? b : (b.temporadas.find((t) => t.temporada === anio) || { rounds: 0, histFechas: 0 }));
+  const fechasJugadas = byComm.reduce((s, b) => s + enAnio(b).rounds, 0);
+  const fechasAntes = byComm.reduce((s, b) => s + enAnio(b).histFechas, 0);
 
   // Tarjetas completas del jugador (18 hoyos): gross y neto por ronda
-  const myCards = [...rStats].sort(porFechaDesc).map((r) => {
+  const myCards = [...rJuego].sort(porFechaDesc).map((r) => {
     const course = courses.find((c) => c.id === r.courseId);
     let mp = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === me.id) mp = p; }));
     if (!mp || !course) return null;
@@ -2940,6 +3018,31 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
   // la más reciente, que es como se lee un gráfico de progreso.
   const trend = [...myCards].reverse();
   const avg = (arr) => (arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(1);
+
+  const Bloque = ({ titulo, sub }) => (
+    <div style={{ margin: "26px 0 12px", paddingBottom: 8, borderBottom: `2px solid ${C.green}` }}>
+      <div style={{ fontFamily: "'Fraunces'", fontWeight: 900, fontSize: 24, color: C.green }}>{titulo}</div>
+      {sub && <div style={{ fontSize: 13, color: "#7a8780", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+  const Subtitulo = ({ children }) => (
+    <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>{children}</div>
+  );
+  const etiquetaDato = { fontSize: 11.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" };
+  const colorPlata = (v) => (v >= 0 ? C.green : C.red);
+  // Varios datos chicos en UNA tarjeta, en columnas parejas: cinco tarjetas
+  // sueltas en dos columnas dejaban una sola colgando abajo.
+  const FilaDatos = ({ datos, columnas }) => (
+    <Card style={{ padding: "12px 14px", marginBottom: 12, display: "grid", gridTemplateColumns: `repeat(${columnas}, minmax(0,1fr))`, gap: "12px 10px" }}>
+      {datos.map(([t, v, color]) => (
+        <div key={t} style={{ minWidth: 0 }}>
+          <div style={{ ...etiquetaDato, fontSize: 11 }}>{t}</div>
+          <div style={{ fontFamily: "'Fraunces'", fontWeight: 900, fontSize: 18, color: color || C.green, marginTop: 2, whiteSpace: "nowrap" }}>{v}</div>
+        </div>
+      ))}
+    </Card>
+  );
+  const ordinal = (n) => `${n}º`;
 
   return (
     <div>
@@ -3005,95 +3108,226 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
         </Card>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 22 }}>
-        <Card style={{ padding: 18 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Jugador</div>
-          <div style={{ fontFamily: "'Fraunces'", fontSize: 22, fontWeight: 600, marginTop: 4 }}>{me.name} {me.last}</div>
-          <div style={{ color: "#7a8780", fontSize: 13.5, marginTop: 2 }}>{me.email}</div>
-          <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {/* Si nunca cargó el hándicap en su perfil, se muestra con el que
-                jugó la última vez, que es el que la app usa igual. */}
-            <Chip tone="green">hcp {me.hcp ?? (ultJugado ? ultJugado.hcp : "—")}</Chip>
-            {me.birth && <Chip tone="neutral">{me.birth}</Chip>}
+      <Card style={{ padding: 18 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Jugador</div>
+        <div style={{ fontFamily: "'Fraunces'", fontSize: 22, fontWeight: 600, marginTop: 4 }}>{me.name} {me.last}</div>
+        <div style={{ color: "#7a8780", fontSize: 13.5, marginTop: 2 }}>{me.email}</div>
+        <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {/* Si nunca cargó el hándicap en su perfil, se muestra con el que
+              jugó la última vez, que es el que la app usa igual. */}
+          <Chip tone="green">hcp {me.hcp ?? (ultJugado ? ultJugado.hcp : "—")}</Chip>
+          {me.birth && <Chip tone="neutral">{me.birth}</Chip>}
+        </div>
+        {me.hcp == null && ultJugado && (
+          <div style={{ fontSize: 11.5, color: C.gold, fontWeight: 700, marginTop: 6, lineHeight: 1.45 }}>
+            Es el de tu última fecha ({fechaCorta(ultJugado.date)}). Cárgalo en tu perfil para que sea el tuyo.
           </div>
-          {me.hcp == null && ultJugado && (
-            <div style={{ fontSize: 11.5, color: C.gold, fontWeight: 700, marginTop: 6, lineHeight: 1.45 }}>
-              Es el de tu última fecha ({fechaCorta(ultJugado.date)}). Cárgalo en tu perfil para que sea el tuyo.
-            </div>
-          )}
-        </Card>
-        <Card style={{ padding: 18 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Rondas jugadas</div>
-          <div style={{ fontFamily: "'Fraunces'", fontSize: 30, fontWeight: 900, color: C.green, marginTop: 4 }}>{totalFechas}</div>
-          {histFechas > 0 && (
-            <div style={{ fontSize: 11.5, color: "#9aa69e", marginTop: 2 }}>
-              {myRounds.length} en la app · {histFechas} antes de usarla
-            </div>
-          )}
-        </Card>
-        <Card style={{ padding: 18 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>Balance total</div>
-          <div style={{ fontFamily: "'Fraunces'", fontSize: 30, fontWeight: 900, marginTop: 4, color: grandTotal >= 0 ? C.green : C.red }}>{money(grandTotal)}</div>
-        </Card>
-      </div>
+        )}
+      </Card>
 
-      {/* MONEY LIST POR COMUNIDAD */}
-      <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Money list por comunidad</div>
-      {byComm.length === 0 ? (
+      {/* ================= MI PLATA ================= */}
+      <Bloque titulo="Mi plata" sub="Por comunidad y por temporada. Son los mismos números del money list de cada comunidad." />
+      {!comElegida ? (
         <Card style={{ padding: 22, color: "#7a8780", marginBottom: 22 }}>
-          Aún no apareces como participante en ninguna ronda. Cuando inicies una ronda e incluyas tu nombre en un equipo, tus resultados se acumularán aquí por comunidad.
+          Todavía no jugaste ninguna fecha. Cuando juegues, aquí verás cuánto llevas en cada comunidad y en cada temporada.
         </Card>
       ) : (
-        <Card style={{ overflow: "hidden", marginBottom: 22 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr 1fr 1fr 1fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
-            <div>Comunidad</div><div style={{ textAlign: "center" }}>Rondas</div><div style={{ textAlign: "right" }}>Mejor</div><div style={{ textAlign: "right" }}>Peor</div><div style={{ textAlign: "right" }}>Acumulado</div>
-          </div>
-          {byComm.map((b, i) => (
-            <div key={b.communityId} style={{ borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr 1fr 1fr 1fr", padding: "11px 14px", alignItems: "center" }}>
-                <div style={{ fontWeight: 600 }}>
-                  {cName(b.communityId)}
-                  {b.histFechas > 0 && (
-                    <div style={{ fontSize: 11, color: "#9aa69e", fontWeight: 500 }}>
-                      incluye {money(b.hist, cCur(b.communityId))} de {b.histFechas} {b.histFechas === 1 ? "fecha jugada" : "fechas jugadas"} antes de usar la app
-                    </div>
-                  )}
-                </div>
-                <div style={{ textAlign: "center" }}>{b.rounds}</div>
-                <div style={{ textAlign: "right", color: C.green, fontSize: 13 }}>{Number.isFinite(b.best) ? money(b.best, cCur(b.communityId)) : "—"}</div>
-                <div style={{ textAlign: "right", color: C.red, fontSize: 13 }}>{Number.isFinite(b.worst) ? money(b.worst, cCur(b.communityId)) : "—"}</div>
-                <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'", fontSize: 16, color: b.total >= 0 ? C.green : C.red }}>{money(b.total, cCur(b.communityId))}</div>
-              </div>
-              {b.temporadas.length > 1 && (
-                <div style={{ padding: "0 14px 10px 14px", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {b.temporadas.map((t) => (
-                    <span key={t.temporada} style={{ fontSize: 11.5, color: "#7a8780", background: C.creamDk, borderRadius: 999, padding: "3px 10px" }}>
-                      <b>{t.temporada}</b>: {money(t.total, cCur(b.communityId))} en {t.rounds} {t.rounds === 1 ? "fecha" : "fechas"}
-                    </span>
-                  ))}
-                </div>
-              )}
+        <>
+          {misComunidades.length > 1 && (
+            <Pildoras titulo="Comunidad" valor={comElegida} onCambiar={setPlataCom}
+              opciones={misComunidades.map((id) => [id, cName(id)])} />
+          )}
+          <Pildoras titulo="Temporada" valor={tempElegida} onCambiar={setPlataTemp}
+            opciones={temporadasCom.map((t) => [t, t])} />
+
+          {/* El balance es EL número: va solo y grande, con el puesto al lado.
+              Así entra aunque sea de cuatro cifras (+S/.1250.00). */}
+          <Card style={{ padding: 16, margin: "6px 0 12px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={etiquetaDato}>Balance {tempElegida}{misComunidades.length === 1 ? ` · ${cName(comElegida)}` : ""}</div>
+              <div style={{ fontFamily: "'Fraunces'", fontSize: 32, fontWeight: 900, lineHeight: 1.1, marginTop: 2, color: colorPlata(plata.total) }}>{money(plata.total, cur)}</div>
             </div>
-          ))}
-        </Card>
-      )}
-      {byComm.some((b) => b.histFechas > 0) && (
-        <div style={{ fontSize: 12, color: "#7a8780", margin: "-14px 0 20px" }}>
-          De las fechas jugadas antes de usar la app tenemos la tarjeta y el hándicap del día —así que las
-          estadísticas, el hoyo por hoyo y tus tarjetas sí las incluyen—, pero no el detalle de cómo se repartió
-          la plata: por eso «Mejor», «Peor» y el historial de rondas de abajo solo miran lo jugado dentro de la app.
-        </div>
+            {plata.puesto != null && (
+              <div style={{ textAlign: "right" }}>
+                <div style={etiquetaDato}>Money list</div>
+                <div style={{ fontFamily: "'Fraunces'", fontSize: 32, fontWeight: 900, lineHeight: 1.1, marginTop: 2, color: C.green }}>
+                  {ordinal(plata.puesto)}<span style={{ fontFamily: "'Spline Sans',sans-serif", fontSize: 13.5, fontWeight: 600, color: "#7a8780" }}> de {plata.de}</span>
+                </div>
+              </div>
+            )}
+          </Card>
+          <FilaDatos columnas={3} datos={[
+            ["Fechas", plata.fechas, C.ink],
+            // El color sigue al signo: la "peor" fecha también puede haber sido ganadora.
+            ["Mejor fecha", plata.mejor != null ? money(plata.mejor, cur) : "—", plata.mejor != null ? colorPlata(plata.mejor) : "#9aa69e"],
+            ["Peor fecha", plata.peor != null ? money(plata.peor, cur) : "—", plata.peor != null ? colorPlata(plata.peor) : "#9aa69e"],
+          ]} />
+          {plata.histFechas > 0 && (
+            <div style={{ fontSize: 12, color: "#7a8780", marginBottom: 18, lineHeight: 1.5 }}>
+              Incluye {money(plata.hist, cur)} de {plata.histFechas} {plata.histFechas === 1 ? "fecha jugada" : "fechas jugadas"} antes
+              de usar la app. De esas fechas no está el detalle de cómo se repartió la plata, así que «Mejor» y «Peor» y la lista
+              de abajo solo miran lo jugado en la app.
+            </div>
+          )}
+
+          {/* El Medal es un concurso de la comunidad: va con su plata */}
+          {(() => {
+            const medal = playerMedalHistory(me.id, plata.rondas);
+            if (!medal.length) return null;
+            const ganados = medal.filter((m) => m.ganó).length;
+            const mejor = Math.min(...medal.map((m) => m.neto ?? Infinity));
+            return (
+              <>
+                <Subtitulo>Medal</Subtitulo>
+                <Card style={{ overflow: "hidden", marginBottom: 22 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr .8fr .8fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
+                    <div>Fecha</div><div style={{ textAlign: "right" }}>Neto</div><div style={{ textAlign: "center" }}>Resultado</div><div style={{ textAlign: "right" }}>Caminos</div>
+                  </div>
+                  {medal.map((m, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr .8fr .8fr", padding: "10px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
+                      <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}</div><div style={{ fontSize: 11.5, color: "#9aa69e" }}>{m.date}</div></div>
+                      <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'" }}>{m.neto ?? "—"}</div>
+                      <div style={{ textAlign: "center", fontSize: 12.5 }}>{m.anulado ? <Chip tone="neutral">Anulado</Chip> : m.ganó ? <Chip tone="gold">🏆 Ganado</Chip> : "—"}</div>
+                      <div style={{ textAlign: "right", fontWeight: 700, color: m.tokens > 0 ? C.green : m.tokens < 0 ? C.red : "#9aa69e" }}>{fmtTokSigned(m.tokens)}</div>
+                    </div>
+                  ))}
+                  <div style={{ padding: "11px 14px", borderTop: `2px solid ${C.green}`, background: C.creamDk, fontSize: 13, fontWeight: 700, color: C.green }}>
+                    {ganados} {ganados === 1 ? "Medal ganado" : "Medales ganados"} de {medal.length} · mejor neto {Number.isFinite(mejor) ? mejor : "—"}
+                  </div>
+                </Card>
+              </>
+            );
+          })()}
+
+          <Subtitulo>Mis fechas</Subtitulo>
+          {plata.rondas.length === 0 && (
+            <Card style={{ padding: 18, color: "#7a8780", marginBottom: 22 }}>
+              {plata.histFechas > 0
+                ? `En ${tempElegida} solo tienes fechas de antes de usar la app; de esas no hay detalle fecha por fecha.`
+                : `No jugaste fechas en ${tempElegida} en esta comunidad.`}
+            </Card>
+          )}
+          {plata.rondas.map((r) => {
+            const c = communities.find((x) => x.id === r.communityId);
+            const myRow = r.results.rows.find((x) => x.id === me.id);
+            const course = courses.find((x) => x.id === r.courseId);
+            const isOpen = openCardId === r.id;
+            const fSum = (arr, a, b) => arr.slice(a, b).reduce((s, v) => s + (parseInt(v) || 0), 0);
+            return (
+              <Card key={r.id} style={{ padding: 14, marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{r.eventName || cName(r.communityId)} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
+                    <div style={{ color: "#7a8780", fontSize: 13 }}>{course?.name || ""} · {r.results.rows.length} jugadores</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    {r.results.simple ? (
+                      <>
+                        <div style={{ fontSize: 12, color: "#7a8780" }}>Tu tarjeta</div>
+                        <div style={{ fontWeight: 800, color: C.green }}>{myRow.grossTotal} gross · {myRow.netTotal} neto</div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 12, color: "#7a8780" }}>Tu resultado</div>
+                        <div style={{ fontWeight: 800, color: myRow.totalMoney >= 0 ? C.green : C.red }}>{money(myRow.totalMoney, c?.currency)}</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                  {course ? (
+                    <button onClick={() => setOpenCardId(isOpen ? null : r.id)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>
+                      {isOpen ? "Ocultar tarjetas ▲" : "Ver tarjetas de la ronda ▼"}
+                    </button>
+                  ) : <span />}
+                  <ShareRoundBtn round={r} communityName={c?.name} courseName={course?.name} currency={c?.currency || "S/."} />
+                </div>
+                {isOpen && course && (() => {
+                  const guestIds = new Set((r.guests || []).map((x) => x.id));
+                  const rowsOf = r.teams.flatMap((t) => t.players.map((p) => ({ ...p, teamId: t.id, guest: guestIds.has(p.id) || (r.results.rows.find((x) => x.id === p.id) || {}).guest })));
+                  return (
+                    <div style={{ overflowX: "auto", marginTop: 8, borderTop: `1px solid ${C.line}`, paddingTop: 8 }}>
+                      <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 26 * 21 + 120 }}>
+                        <tbody>
+                          <tr>
+                            <td style={{ padding: "3px 8px", color: "#7a8780", fontWeight: 700, textAlign: "left", minWidth: 110 }}>Hoyo</td>
+                            {course.pars.map((_, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center", color: "#7a8780", fontWeight: 700, minWidth: 26 }}>{h + 1}</td>)}
+                            <td style={{ padding: "3px 6px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>F</td>
+                            <td style={{ padding: "3px 6px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>B</td>
+                            <td style={{ padding: "3px 8px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>Tot</td>
+                          </tr>
+                          <tr style={{ background: C.cream }}>
+                            <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Par</td>
+                            {course.pars.map((p, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center" }}>{p}</td>)}
+                            <td style={{ padding: "3px 6px", textAlign: "center" }}>{course.pars.slice(0, 9).reduce((a, b) => a + b, 0)}</td>
+                            <td style={{ padding: "3px 6px", textAlign: "center" }}>{course.pars.slice(9).reduce((a, b) => a + b, 0)}</td>
+                            <td style={{ padding: "3px 8px", fontWeight: 700, textAlign: "center" }}>{course.pars.reduce((a, b) => a + b, 0)}</td>
+                          </tr>
+                          {rowsOf.map((p) => {
+                            const mine = p.id === me.id;
+                            return (
+                              <tr key={p.id} style={{ borderTop: `1px solid ${C.line}`, background: mine ? "rgba(212,168,67,.10)" : "transparent" }}>
+                                <td style={{ padding: "3px 8px", fontWeight: mine ? 800 : 600, textAlign: "left", whiteSpace: "nowrap" }}>
+                                  {mine ? "★ " : ""}{p.name}{p.guest ? " 🎟️" : ""} <span style={{ color: "#9aa69e", fontWeight: 500 }}>({p.hcp})</span>
+                                </td>
+                                {p.gross.map((g, h) => {
+                                  const v = parseInt(g);
+                                  const col = !v ? "#9aa69e" : v < course.pars[h] ? "#3fa46a" : v > course.pars[h] ? C.red : C.ink;
+                                  return <td key={h} style={{ padding: "3px 0", textAlign: "center", fontWeight: 700, color: col }}>{g ?? "·"}</td>;
+                                })}
+                                <td style={{ padding: "3px 6px", textAlign: "center" }}>{fSum(p.gross, 0, 9)}</td>
+                                <td style={{ padding: "3px 6px", textAlign: "center" }}>{fSum(p.gross, 9, 18)}</td>
+                                <td style={{ padding: "3px 8px", fontWeight: 800, textAlign: "center" }}>{fSum(p.gross, 0, 18)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      <div style={{ fontSize: 12, color: "#7a8780", marginTop: 6 }}>
+                        Tarjeta completa de la ronda: todos los jugadores{(r.guests || []).length ? ", incluidos los invitados (🎟️)" : ""}. Entre paréntesis, el hándicap con el que jugó cada uno.
+                      </div>
+                    </div>
+                  );
+                })()}
+              </Card>
+            );
+          })}
+        </>
       )}
 
+      {/* ================= MI JUEGO ================= */}
+      <Bloque titulo="Mi juego" sub="De todas tus comunidades juntas: tu juego es el mismo donde sea que juegues." />
+      {aniosJuego.length > 1 && (
+        <Pildoras titulo="Temporada" valor={anio} onCambiar={setAnioJuego}
+          opciones={[["todas", "Todas"], ...aniosJuego.map((t) => [t, t])]} />
+      )}
+
+      <div style={{ fontSize: 14, color: C.ink, margin: "2px 0 12px" }}>
+        <b style={{ fontFamily: "'Fraunces'", fontSize: 20, color: C.green }}>{fechasJugadas}</b>{" "}
+        {fechasJugadas === 1 ? "ronda jugada" : "rondas jugadas"}{anio === "todas" ? "" : ` en ${anio}`}
+        {fechasAntes > 0 && <span style={{ color: "#9aa69e" }}> · {fechasJugadas - fechasAntes} en la app, {fechasAntes} antes de usarla</span>}
+      </div>
+      {myCards.length > 0 && (
+        <FilaDatos columnas={2} datos={[
+          ["Mejor gross", Math.min(...myCards.map((c) => c.grossTotal))],
+          ["Promedio gross", avg(myCards.map((c) => c.grossTotal))],
+          ["Mejor neto", Math.min(...myCards.map((c) => c.netTotal))],
+          ["Promedio neto", avg(myCards.map((c) => c.netTotal))],
+        ]} />
+      )}
+      <div style={{ height: 10 }} />
+
       {/* ESTADÍSTICAS DE JUEGO */}
-      <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Estadísticas de juego</div>
+      <Subtitulo>Estadísticas de juego</Subtitulo>
       {stats.holes === 0 ? (
         <Card style={{ padding: 22, color: "#7a8780", marginBottom: 22 }}>
-          Tus estadísticas (hoyos en uno, albatros, eagles, birdies, pares, bogeys, dobles, +dobles) aparecerán aquí cuando juegues una ronda en la que estés incluido.
+          {anio === "todas"
+            ? "Tus estadísticas (hoyos en uno, albatros, eagles, birdies, pares, bogeys, dobles, +dobles) aparecerán aquí cuando juegues una ronda en la que estés incluido."
+            : `No hay tarjetas tuyas de ${anio}.`}
         </Card>
       ) : (
         <Card style={{ padding: 18, marginBottom: 22 }}>
-          <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 12 }}>Sobre {stats.holes} hoyos jugados</div>
+          <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 12 }}>Sobre {stats.holes} hoyos jugados{anio === "todas" ? "" : ` en ${anio}`}</div>
           <div style={{ display: "grid", gap: 9 }}>
             {SCORE_CATS.map(([key, label, color]) => {
               const n = stats.counts[key];
@@ -3112,55 +3346,41 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
         </Card>
       )}
 
-      {/* GROSS Y NETO */}
-      {myCards.length > 0 && (
+      {/* GROSS Y NETO, ronda por ronda: barra gross con la porción neta marcada */}
+      {trend.length > 1 && (
         <>
-          <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Gross y neto</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, marginBottom: 22 }}>
-            {[["Mejor gross", Math.min(...myCards.map((c) => c.grossTotal))],
-              ["Promedio gross", avg(myCards.map((c) => c.grossTotal))],
-              ["Mejor neto", Math.min(...myCards.map((c) => c.netTotal))],
-              ["Promedio neto", avg(myCards.map((c) => c.netTotal))]].map(([l, v]) => (
-              <Card key={l} style={{ padding: 14 }}>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: "#7a8780", textTransform: "uppercase" }}>{l}</div>
-                <div style={{ fontFamily: "'Fraunces'", fontSize: 26, fontWeight: 900, color: C.green, marginTop: 2 }}>{v}</div>
-              </Card>
-            ))}
-          </div>
-          {/* Evolución fecha por fecha: barra gross con la porción neta marcada */}
-          {trend.length > 1 && (
-            <Card style={{ padding: 18, marginBottom: 22, overflowX: "auto" }}>
-              <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 14 }}>Ronda por ronda · barra completa = gross, tramo oscuro = neto</div>
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 10, minHeight: 130 }}>
-                {trend.map((c, i) => {
-                  const max = Math.max(...trend.map((x) => x.grossTotal));
-                  const h = Math.round((c.grossTotal / max) * 110);
-                  const hn = Math.round((c.netTotal / c.grossTotal) * h);
-                  return (
-                    <div key={i} style={{ textAlign: "center", minWidth: 48 }}>
-                      <div style={{ fontSize: 12, fontWeight: 800, color: C.green, marginBottom: 3 }}>{c.grossTotal}</div>
-                      <div title={`${c.date} · ${c.courseName} · gross ${c.grossTotal} · neto ${c.netTotal}`}
-                        style={{ height: h, background: "rgba(63,164,106,.35)", borderRadius: "6px 6px 0 0", display: "flex", alignItems: "flex-end", overflow: "hidden" }}>
-                        <div style={{ width: "100%", height: hn, background: C.green }} />
-                      </div>
-                      <div style={{ fontSize: 11.5, fontWeight: 700, color: C.gold }}>{c.netTotal}</div>
-                      <div style={{ fontSize: 10.5, color: "#9aa69e" }}>{(c.date || "").slice(5)}</div>
+          <Subtitulo>Gross y neto</Subtitulo>
+          <Card style={{ padding: 18, marginBottom: 22, overflowX: "auto" }}>
+            <div style={{ fontSize: 13, color: "#7a8780", marginBottom: 14 }}>Ronda por ronda · barra completa = gross, tramo oscuro = neto</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 10, minHeight: 130 }}>
+              {trend.map((c, i) => {
+                const max = Math.max(...trend.map((x) => x.grossTotal));
+                const h = Math.round((c.grossTotal / max) * 110);
+                const hn = Math.round((c.netTotal / c.grossTotal) * h);
+                return (
+                  <div key={i} style={{ textAlign: "center", minWidth: 48 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: C.green, marginBottom: 3 }}>{c.grossTotal}</div>
+                    <div title={`${c.date} · ${c.courseName} · gross ${c.grossTotal} · neto ${c.netTotal}`}
+                      style={{ height: h, background: "rgba(63,164,106,.35)", borderRadius: "6px 6px 0 0", display: "flex", alignItems: "flex-end", overflow: "hidden" }}>
+                      <div style={{ width: "100%", height: hn, background: C.green }} />
                     </div>
-                  );
-                })}
-              </div>
-            </Card>
-          )}
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: C.gold }}>{c.netTotal}</div>
+                    <div style={{ fontSize: 10.5, color: "#9aa69e" }}>{(c.date || "").slice(5)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
         </>
       )}
 
       {/* RENDIMIENTO HOYO POR HOYO */}
       {(() => {
-        const canchasJugadas = [...new Set(rStats.filter((r) => r.teams.some((t) => t.players.some((p) => p.id === me.id))).map((r) => r.courseId))]
+        const canchasJugadas = [...new Set(rJuego.filter(juegoEn).map((r) => r.courseId))]
           .map((id) => courses.find((c) => c.id === id)).filter(Boolean);
         if (!canchasJugadas.length) return null;
-        const elegida = holeCourse || canchasJugadas[0].id;
-        const hs = playerHoleStats(me.id, rStats, elegida, courses);
+        const elegida = canchasJugadas.some((c) => c.id === holeCourse) ? holeCourse : canchasJugadas[0].id;
+        const hs = playerHoleStats(me.id, rJuego, elegida, courses);
         if (!hs) return null;
         const peor = Math.max(...hs.hoyos.map((h) => (h.vsPar == null ? -99 : h.vsPar)));
         return (
@@ -3199,144 +3419,15 @@ function PlayerView({ me, rounds, roundsStats, communities, players, courses: co
         );
       })()}
 
-      {/* HISTORIAL DEL MEDAL */}
-      {(() => {
-        const medal = playerMedalHistory(me.id, rounds);
-        if (!medal.length) return null;
-        const ganados = medal.filter((m) => m.ganó).length;
-        const mejor = Math.min(...medal.map((m) => m.neto ?? Infinity));
-        return (
-          <>
-            <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Medal</div>
-            <Card style={{ overflow: "hidden", marginBottom: 22 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr .8fr .8fr", background: C.greenDeep, color: C.lime, fontWeight: 700, fontSize: 12.5, padding: "10px 14px" }}>
-                <div>Fecha</div><div style={{ textAlign: "right" }}>Neto</div><div style={{ textAlign: "center" }}>Resultado</div><div style={{ textAlign: "right" }}>Caminos</div>
-              </div>
-              {medal.map((m, i) => (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "1.5fr .7fr .8fr .8fr", padding: "10px 14px", alignItems: "center", borderTop: `1px solid ${C.line}`, background: i % 2 ? C.cream : C.paper }}>
-                  <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}</div><div style={{ fontSize: 11.5, color: "#9aa69e" }}>{m.date}</div></div>
-                  <div style={{ textAlign: "right", fontWeight: 800, fontFamily: "'Fraunces'" }}>{m.neto ?? "—"}</div>
-                  <div style={{ textAlign: "center", fontSize: 12.5 }}>{m.anulado ? <Chip tone="neutral">Anulado</Chip> : m.ganó ? <Chip tone="gold">🏆 Ganado</Chip> : "—"}</div>
-                  <div style={{ textAlign: "right", fontWeight: 700, color: m.tokens > 0 ? C.green : m.tokens < 0 ? C.red : "#9aa69e" }}>{fmtTokSigned(m.tokens)}</div>
-                </div>
-              ))}
-              <div style={{ padding: "11px 14px", borderTop: `2px solid ${C.green}`, background: C.creamDk, fontSize: 13, fontWeight: 700, color: C.green }}>
-                {ganados} {ganados === 1 ? "Medal ganado" : "Medales ganados"} de {medal.length} · mejor neto {Number.isFinite(mejor) ? mejor : "—"}
-              </div>
-            </Card>
-          </>
-        );
-      })()}
-
       {/* MOVIMIENTO DE HÁNDICAP */}
       {hcpHist.length > 0 && (
         <>
-          <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Movimiento de hándicap</div>
+          <Subtitulo>Movimiento de hándicap</Subtitulo>
           <Card style={{ padding: 18, marginBottom: 22 }}>
             <GraficoHcp hist={hcpHist} />
           </Card>
         </>
       )}
-
-      {/* HISTORIAL */}
-      <div style={{ fontFamily: "'Fraunces'", fontWeight: 600, fontSize: 18, color: C.green, marginBottom: 10 }}>Historial de rondas</div>
-      {rounds.length === 0 && <Card style={{ padding: 22, color: "#7a8780" }}>Aún no hay rondas guardadas. Crea una desde “Iniciar Ronda”.</Card>}
-      {[...rounds].sort(porFechaDesc).map((r, i) => {
-        const c = communities.find((x) => x.id === r.communityId);
-        const myRow = r.results.rows.find((x) => x.id === me.id);
-        const top = [...r.results.rows].sort((a, b) => b.totalMoney - a.totalMoney)[0];
-        const course = courses.find((x) => x.id === r.courseId);
-        let myPlayer = null; r.teams.forEach((t) => t.players.forEach((p) => { if (p.id === me.id) myPlayer = p; }));
-        const isOpen = openCardIdx === i;
-        const fSum = (arr, a, b) => arr.slice(a, b).reduce((s, v) => s + (parseInt(v) || 0), 0);
-        return (
-          <Card key={i} style={{ padding: 14, marginBottom: 8 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-              <div>
-                <div style={{ fontWeight: 700 }}>{r.eventName || c?.name || (r.communityId === "libre" ? "🕊️ Ronda libre" : "Comunidad")} · {r.date} {r.results.simple && <Chip tone="neutral">Ronda simple</Chip>}</div>
-                <div style={{ color: "#7a8780", fontSize: 13 }}>
-                  {c?.name || (r.communityId === "libre" ? "🕊️ Ronda libre" : "Comunidad")} · {course?.name || ""} · {r.results.rows.length} jugadores
-                </div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                {myRow ? (
-                  r.results.simple ? (
-                    <>
-                      <div style={{ fontSize: 12, color: "#7a8780" }}>Tu tarjeta</div>
-                      <div style={{ fontWeight: 800, color: C.green }}>{myRow.grossTotal} gross · {myRow.netTotal} neto</div>
-                    </>
-                  ) : (
-                    <>
-                      <div style={{ fontSize: 12, color: "#7a8780" }}>Tu resultado</div>
-                      <div style={{ fontWeight: 800, color: myRow.totalMoney >= 0 ? C.green : C.red }}>{money(myRow.totalMoney, c?.currency)}</div>
-                    </>
-                  )
-                ) : (
-                  <>
-                    <div style={{ fontSize: 12, color: "#7a8780" }}>Mejor de la ronda</div>
-                    <div style={{ fontWeight: 800, color: C.gold }}>{top?.name} · {money(top?.totalMoney || 0, c?.currency)}</div>
-                  </>
-                )}
-              </div>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
-              {course ? (
-                <button onClick={() => setOpenCardIdx(isOpen ? null : i)} style={{ border: "none", background: "transparent", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 12.5, fontFamily: "'Spline Sans',sans-serif", padding: 0 }}>
-                  {isOpen ? "Ocultar tarjetas ▲" : "Ver tarjetas de la ronda ▼"}
-                </button>
-              ) : <span />}
-              <ShareRoundBtn round={r} communityName={c?.name} courseName={course?.name} currency={c?.currency || "S/."} />
-            </div>
-            {isOpen && course && (() => {
-              const guestIds = new Set((r.guests || []).map((x) => x.id));
-              const rowsOf = r.teams.flatMap((t) => t.players.map((p) => ({ ...p, teamId: t.id, guest: guestIds.has(p.id) || (r.results.rows.find((x) => x.id === p.id) || {}).guest })));
-              return (
-                <div style={{ overflowX: "auto", marginTop: 8, borderTop: `1px solid ${C.line}`, paddingTop: 8 }}>
-                  <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 26 * 21 + 120 }}>
-                    <tbody>
-                      <tr>
-                        <td style={{ padding: "3px 8px", color: "#7a8780", fontWeight: 700, textAlign: "left", minWidth: 110 }}>Hoyo</td>
-                        {course.pars.map((_, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center", color: "#7a8780", fontWeight: 700, minWidth: 26 }}>{h + 1}</td>)}
-                        <td style={{ padding: "3px 6px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>F</td>
-                        <td style={{ padding: "3px 6px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>B</td>
-                        <td style={{ padding: "3px 8px", fontWeight: 700, color: "#7a8780", textAlign: "center" }}>Tot</td>
-                      </tr>
-                      <tr style={{ background: C.cream }}>
-                        <td style={{ padding: "3px 8px", fontWeight: 600, textAlign: "left" }}>Par</td>
-                        {course.pars.map((p, h) => <td key={h} style={{ padding: "3px 0", textAlign: "center" }}>{p}</td>)}
-                        <td style={{ padding: "3px 6px", textAlign: "center" }}>{course.pars.slice(0, 9).reduce((a, b) => a + b, 0)}</td>
-                        <td style={{ padding: "3px 6px", textAlign: "center" }}>{course.pars.slice(9).reduce((a, b) => a + b, 0)}</td>
-                        <td style={{ padding: "3px 8px", fontWeight: 700, textAlign: "center" }}>{course.pars.reduce((a, b) => a + b, 0)}</td>
-                      </tr>
-                      {rowsOf.map((p) => {
-                        const mine = p.id === me.id;
-                        return (
-                          <tr key={p.id} style={{ borderTop: `1px solid ${C.line}`, background: mine ? "rgba(212,168,67,.10)" : "transparent" }}>
-                            <td style={{ padding: "3px 8px", fontWeight: mine ? 800 : 600, textAlign: "left", whiteSpace: "nowrap" }}>
-                              {mine ? "★ " : ""}{p.name}{p.guest ? " 🎟️" : ""} <span style={{ color: "#9aa69e", fontWeight: 500 }}>({p.hcp})</span>
-                            </td>
-                            {p.gross.map((g, h) => {
-                              const v = parseInt(g);
-                              const col = !v ? "#9aa69e" : v < course.pars[h] ? "#3fa46a" : v > course.pars[h] ? C.red : C.ink;
-                              return <td key={h} style={{ padding: "3px 0", textAlign: "center", fontWeight: 700, color: col }}>{g ?? "·"}</td>;
-                            })}
-                            <td style={{ padding: "3px 6px", textAlign: "center" }}>{fSum(p.gross, 0, 9)}</td>
-                            <td style={{ padding: "3px 6px", textAlign: "center" }}>{fSum(p.gross, 9, 18)}</td>
-                            <td style={{ padding: "3px 8px", fontWeight: 800, textAlign: "center" }}>{fSum(p.gross, 0, 18)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  <div style={{ fontSize: 12, color: "#7a8780", marginTop: 6 }}>
-                    Tarjeta completa de la ronda: todos los jugadores{(r.guests || []).length ? ", incluidos los invitados (🎟️)" : ""}. Entre paréntesis, el hándicap con el que jugó cada uno.
-                  </div>
-                </div>
-              );
-            })()}
-          </Card>
-        );
-      })}
     </div>
   );
 }
