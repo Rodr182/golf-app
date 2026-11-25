@@ -12,7 +12,9 @@ page.on("dialog", (d) => d.accept());
 let fallos = 0;
 const T = (n, ok, d = "") => { if (!ok) fallos++; console.log(`${ok ? "✓" : "✗ FALLA"}  ${n}${d ? " — " + d : ""}`); };
 const nav = async (l) => { await page.locator(`button:text-is("${l}")`).first().click(); await page.waitForTimeout(350); };
-const anuncios = () => page.locator("text=Espacio publicitario").count();
+// Un anuncio es el banner de un auspiciador o, si todavía no hay imagen, el
+// cartel de muestra: cuenta cualquiera de los dos.
+const anuncios = async () => (await page.locator("a[data-anuncio]").count()) + (await page.locator("text=Espacio publicitario").count());
 const texto = () => page.locator("body").innerText();
 
 await page.goto(BASE, { waitUntil: "networkidle" });

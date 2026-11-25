@@ -5174,7 +5174,7 @@ const isAppAdmin = (me) => !!me && (!CLOUD || APP_ADMIN_EMAILS.includes((me.emai
    Mientras no haya ninguna imagen, el espacio sigue mostrando el cartel de
    muestra — y el enlace no se usa, porque no hay nada que tocar. */
 const AUSPICIADORES = [
-  { nombre: "Pink River", enlace: "https://www.pinkriverbrand.com", imagenes: [] },
+  { nombre: "Pink River", enlace: "https://www.pinkriverbrand.com", imagenes: ["pinkriver-1.jpg"] },
 ];
 const ANUNCIOS = AUSPICIADORES.flatMap((a) => (a.imagenes || []).map((imagen) => ({ ...a, imagen })));
 
